@@ -18,7 +18,7 @@ func TestProfileGatewayCommand(t *testing.T) {
 	}
 }
 
-func TestGatewayEnvSetsOpenCodeAuthAndHome(t *testing.T) {
+func TestGatewayEnvAlignsOpenCodeHomeWithWorkspaceRoot(t *testing.T) {
 	p := NewProfile("opencode")
 	req := gateway.CreateGatewayRequest{
 		InstanceID: 7,
@@ -32,8 +32,15 @@ func TestGatewayEnvSetsOpenCodeAuthAndHome(t *testing.T) {
 	env := p.GatewayEnv(nil, gateway.Config{RuntimeType: "opencode"}, req, "/workspaces/opencode/user-3/instance-7", 20042)
 	joined := strings.Join(env, "\n")
 	for _, want := range []string{
-		"HOME=/workspaces/opencode/user-3/instance-7/home",
+		"HOME=/workspaces/opencode/user-3/instance-7",
+		"CLAWMANAGER_WORKSPACE_PATH=/workspaces/opencode/user-3/instance-7",
+		"CLAWMANAGER_PROJECT_PATH=/workspaces/opencode/user-3/instance-7/project",
 		"OPENCODE_CONFIG_DIR=/workspaces/opencode/user-3/instance-7/home/.opencode",
+		"XDG_CONFIG_HOME=/workspaces/opencode/user-3/instance-7/home/.config",
+		"XDG_CACHE_HOME=/workspaces/opencode/user-3/instance-7/home/.cache",
+		"XDG_DATA_HOME=/workspaces/opencode/user-3/instance-7/home/.local/share",
+		"XDG_STATE_HOME=/workspaces/opencode/user-3/instance-7/home/.local/state",
+		"OPENCODE_DISABLE_FFF=1",
 		"OPENCODE_SERVER_PASSWORD=igt_secret",
 		"OPENCODE_SERVER_USERNAME=opencode",
 		"PORT=20042",

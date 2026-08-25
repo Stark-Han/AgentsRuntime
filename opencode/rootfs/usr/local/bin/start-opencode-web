@@ -25,9 +25,9 @@ fi
 # The managed workspace is only a container for uploaded projects and skills.
 # Init-container exports are not inherited by the main desktop container, so
 # calculate the default project here instead of relying on its temporary env.
-workspace_path="${CLAWMANAGER_PROJECT_PATH:-${CLAWMANAGER_WORKSPACE_PATH:-/config/workspace}}"
+workspace_path="${CLAWMANAGER_WORKSPACE_PATH:-/config/workspace}"
 workspace_path="$(realpath -m "${workspace_path}")"
-project_path="${CLAWMANAGER_DEFAULT_PROJECT_PATH:-${workspace_path%/}/project}"
+project_path="${CLAWMANAGER_DEFAULT_PROJECT_PATH:-${CLAWMANAGER_PROJECT_PATH:-${workspace_path%/}/project}}"
 project_path="$(realpath -m "${project_path}")"
 
 # A project path originates from the control plane.  Treat it as untrusted at
