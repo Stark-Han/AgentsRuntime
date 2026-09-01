@@ -14,6 +14,7 @@ import (
 	"github.com/iamlovingit/clawmanager-agent/internal/gateway"
 	"github.com/iamlovingit/clawmanager-agent/internal/llmconfig"
 	runtimeprofiles "github.com/iamlovingit/clawmanager-agent/internal/runtime"
+	"github.com/iamlovingit/clawmanager-agent/internal/runtime/deepseek"
 	"github.com/iamlovingit/clawmanager-agent/internal/runtime/generic"
 	"github.com/iamlovingit/clawmanager-agent/internal/runtime/hermes"
 	"github.com/iamlovingit/clawmanager-agent/internal/runtime/openclaw"
@@ -180,6 +181,7 @@ func defaultRuntimeRegistry() *runtimeprofiles.Registry {
 	registry := runtimeprofiles.NewRegistry()
 	_ = registry.Register(openclaw.NewProfile("openclaw"))
 	_ = registry.Register(openclaw.NewProfile("openclaw-shell"))
+	_ = registry.Register(deepseek.NewProfile("deepseek-harness"))
 	_ = registry.Register(hermes.NewProfile("hermes"))
 	_ = registry.Register(opencode.NewProfile("opencode"))
 	_ = registry.Register(windowsvm.NewProfile("windows-vm"))

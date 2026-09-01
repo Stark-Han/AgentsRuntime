@@ -18,7 +18,7 @@ RUN set -eux; \
 
 FROM node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
 
-ARG DSH_VERSION=0.1.0-rc.6
+ARG DSH_VERSION=0.1.2-alpha.3
 ARG PNPM_VERSION=11.25.0
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -56,6 +56,7 @@ RUN set -eux; \
     npm cache clean --force
 
 COPY --from=clawmanager-agent-builder /out/clawmanager-agent /usr/local/bin/clawmanager-agent
+COPY --from=clawmanager-agent-builder /out/clawmanager-agent /usr/local/libexec/clawmanager-agent-image
 COPY deepseek-harness/config/managed.cordis.patch.yml /usr/local/share/deepseek-harness/managed.cordis.patch.yml
 COPY deepseek-harness/scripts/start-deepseek-harness-gateway /usr/local/bin/start-deepseek-harness-gateway
 COPY deepseek-harness/scripts/deepseek-harness-lite-entrypoint /usr/local/bin/deepseek-harness-lite-entrypoint
@@ -66,6 +67,7 @@ RUN set -eux; \
       /usr/local/bin/deepseek-harness-lite-entrypoint; \
     chmod 0755 \
       /usr/local/bin/clawmanager-agent \
+      /usr/local/libexec/clawmanager-agent-image \
       /usr/local/bin/start-deepseek-harness-gateway \
       /usr/local/bin/deepseek-harness-lite-entrypoint; \
     mkdir -p /var/lib/clawmanager-agent /workspaces; \
