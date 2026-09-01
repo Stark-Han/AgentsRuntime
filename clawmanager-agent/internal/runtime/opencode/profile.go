@@ -55,15 +55,33 @@ func (p Profile) GatewayEnv(base []string, cfg gateway.Config, req gateway.Creat
 	env = setEnv(env, "CLAWMANAGER_WORKSPACE_PATH", workspacePath)
 	env = setEnv(env, "CLAWMANAGER_PROJECT_PATH", path.Join(workspacePath, "project"))
 	env = setEnv(env, "CLAWMANAGER_GATEWAY_PORT", strconv.Itoa(port))
-	env = setEnv(env, "HOME", path.Join(workspacePath, "home"))
+	// ClawManager's workspace browser exposes workspacePath as its root. Keep
+	// OpenCode's idea of the user's home aligned with that root as well, or a
+	// project selected as "mcpclient" is resolved as workspacePath/home/mcpclient
+	// even though uploads are stored at workspacePath/mcpclient.
+	//
+	// OpenCode's managed configuration and XDG state remain under the dedicated
+	// home directory below so changing the browsing root does not move or expose
+	// application state in the workspace browser.
+	homePath := path.Join(workspacePath, "home")
+	env = setEnv(env, "HOME", workspacePath)
 	env = setEnv(env, "HOST", "0.0.0.0")
 	env = setEnv(env, "PORT", strconv.Itoa(port))
 
-	opencodeHome := path.Join(workspacePath, "home", ".opencode")
+	opencodeHome := path.Join(homePath, ".opencode")
 	configPath := path.Join(opencodeHome, "opencode.json")
 	env = setEnv(env, "OPENCODE_CONFIG_DIR", opencodeHome)
 	env = setEnv(env, "OPENCODE_CONFIG", configPath)
-	env = setEnv(env, "XDG_CONFIG_HOME", path.Join(workspacePath, "home", ".config"))
+	env = setEnv(env, "XDG_CONFIG_HOME", path.Join(homePath, ".config"))
+	env = setEnv(env, "XDG_CACHE_HOME", path.Join(homePath, ".cache"))
+	env = setEnv(env, "XDG_DATA_HOME", path.Join(homePath, ".local", "share"))
+	env = setEnv(env, "XDG_STATE_HOME", path.Join(homePath, ".local", "state"))
+	// OpenCode 1.18.x's FFF backend refuses to search a directory that is also
+	// HOME (and can return an empty project picker). A managed Lite workspace is
+	// already isolated per instance, so use the ripgrep fallback. This keeps the
+	// upload root and OpenCode's project picker root identical without enabling
+	// expensive cross-home or filesystem-root indexing.
+	env = setEnv(env, "OPENCODE_DISABLE_FFF", "1")
 
 	username, password := resolveOpenCodeServerAuth(cfg, req)
 	env = setEnv(env, "OPENCODE_SERVER_USERNAME", username)
