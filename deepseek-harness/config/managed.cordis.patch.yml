@@ -7,20 +7,34 @@
 
 - id: agent-default-model
   config:
-    provider: clawmanager
-    model: !!js process.env.OPENAI_MODEL ?? 'auto'
+    provider: !!js >-
+      (() => {
+        const config = JSON.parse(process.env.CLAWMANAGER_LLM_RESOLVED_CONFIG_JSON ?? '{}');
+        return config.default_provider ?? 'clawmanager';
+      })()
+    model: !!js >-
+      (() => {
+        const config = JSON.parse(process.env.CLAWMANAGER_LLM_RESOLVED_CONFIG_JSON ?? '{}');
+        return config.default_model ?? 'auto';
+      })()
 
 - id: llm-pi-ai
   config:
-    providers:
-      clawmanager:
-        displayName: ClawManager
-        apiKeyEnv: CLAWMANAGER_LLM_API_KEY
-        api: openai-completions
-        baseURL: !!js process.env.CLAWMANAGER_LLM_BASE_URL
-        models: !!js >-
-          JSON.parse(process.env.CLAWMANAGER_LLM_MODEL ?? '["auto"]')
-            .map((id) => ({ id }))
+    providers: !!js >-
+      (() => {
+        const config = JSON.parse(process.env.CLAWMANAGER_LLM_RESOLVED_CONFIG_JSON ?? '{}');
+        const groups = Array.isArray(config.providers) ? config.providers : [];
+        return Object.fromEntries(groups.map((group) => [
+          group.provider_id,
+          {
+            displayName: group.provider_id,
+            apiKeyEnv: config.api_key_env ?? 'CLAWMANAGER_LLM_API_KEY',
+            api: 'openai-completions',
+            baseURL: config.base_url ?? process.env.CLAWMANAGER_LLM_BASE_URL,
+            models: group.model_ids.map((id) => ({ id })),
+          },
+        ]));
+      })()
 
 # The shipped web_search provider calls DeepSeek's public API directly. Managed
 # runtimes intentionally expose no direct-provider credential or bypass route.

@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,92 @@ func TestWriteGatewayConfigCreatesLockedProvider(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("config missing %q in %s", want, body)
+		}
+	}
+}
+
+func TestWriteGatewayConfigGroupsModelsByConfiguredProvider(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "opencode", "user-1", "instance-10")
+	if err := os.MkdirAll(filepath.Join(workspace, "home"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	req := gateway.CreateGatewayRequest{
+		UID: os.Getuid(),
+		GID: os.Getgid(),
+		Environment: map[string]string{
+			"CLAWMANAGER_LLM_BASE_URL":        "http://gateway.example/v1",
+			"CLAWMANAGER_LLM_API_KEY":         "igt_key",
+			"CLAWMANAGER_LLM_MODEL":           `["auto","deepseek","deepseek-v4-pro","yuan-embedding-1.0"]`,
+			"CLAWMANAGER_LLM_PROVIDER_MODELS": `["auto/auto","deepseek/deepseek","deepseek/deepseek-v4-pro","modellist/yuan-embedding-1.0"]`,
+		},
+	}
+	if err := WriteGatewayConfig(gateway.Config{}, req, workspace); err != nil {
+		t.Fatalf("WriteGatewayConfig: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(workspace, "home", ".opencode", "opencode.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["model"] != "auto/auto" {
+		t.Fatalf("model = %#v, want auto/auto", doc["model"])
+	}
+	providers, ok := doc["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider = %#v", doc["provider"])
+	}
+	for _, providerID := range []string{"auto", "deepseek", "modellist"} {
+		if _, exists := providers[providerID]; !exists {
+			t.Fatalf("provider %q missing in %#v", providerID, providers)
+		}
+	}
+	if _, exists := providers[clawmanagerProviderID]; exists {
+		t.Fatalf("legacy clawmanager provider retained in %#v", providers)
+	}
+	deepseekProvider := providers["deepseek"].(map[string]any)
+	deepseekModels := deepseekProvider["models"].(map[string]any)
+	if _, exists := deepseekModels["deepseek-v4-pro"]; !exists {
+		t.Fatalf("deepseek models = %#v", deepseekModels)
+	}
+	disabled, ok := doc["disabled_providers"].([]any)
+	if !ok {
+		t.Fatalf("disabled_providers = %#v", doc["disabled_providers"])
+	}
+	for _, providerID := range disabled {
+		if providerID == "deepseek" {
+			t.Fatalf("configured provider deepseek remained disabled: %#v", disabled)
+		}
+	}
+}
+
+func TestLoadLLMSettingsFromEnvUsesOpenAIModelFallback(t *testing.T) {
+	for _, key := range []string{
+		"CLAWMANAGER_LLM_PROVIDER_MODELS",
+		"CLAWMANAGER_LLM_MODEL",
+		"CLAWMANAGER_LLM_API_KEY",
+		"CLAWMANAGER_INSTANCE_TOKEN",
+	} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("CLAWMANAGER_LLM_BASE_URL", "http://gateway.example/v1")
+	t.Setenv("OPENAI_API_KEY", "openai-token")
+	t.Setenv("OPENAI_MODEL", "gpt-5.5")
+
+	settings, err := LoadLLMSettingsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := RenderConfig(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{`"model": "clawmanager/auto"`, `"gpt-5.5"`, `{env:OPENAI_API_KEY}`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("rendered config missing %q:\n%s", want, text)
 		}
 	}
 }

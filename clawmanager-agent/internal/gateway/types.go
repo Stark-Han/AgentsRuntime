@@ -50,7 +50,9 @@ type Config struct {
 	LLMBaseURL            string
 	LLMAPIKey             string
 	LLMAPIKeySet          bool
+	LLMAPIKeyEnvName      string
 	LLMModelIDs           []string
+	LLMModelsQualified    bool
 	LLMReasoning          map[string]bool
 	LLMReasoningControl   map[string]string
 	AgentDataDir          string

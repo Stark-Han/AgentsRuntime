@@ -25,6 +25,14 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "llm-config" {
+		if err := runLLMConfigCommand(os.Args[2:], os.Stdout); err != nil {
+			log.Printf("render LLM config: %v", err)
+			os.Exit(2)
+		}
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

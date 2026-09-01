@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/iamlovingit/clawmanager-agent/internal/gateway"
+	"github.com/iamlovingit/clawmanager-agent/internal/llmconfig"
 	"github.com/iamlovingit/clawmanager-agent/internal/scheduledtasks"
 )
 
@@ -75,22 +76,11 @@ func chownHermesHome(root string, uid, gid int) error {
 }
 
 func configWithRequestEnv(cfg gateway.Config, req gateway.CreateGatewayRequest) (gateway.Config, error) {
-	resolved := cfg
-	if value, ok := requestEnvValue(req, "CLAWMANAGER_LLM_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"); ok && strings.TrimSpace(value) != "" {
-		resolved.LLMBaseURL = strings.TrimRight(strings.TrimSpace(value), "/")
+	settings, err := llmconfig.ResolveGateway(cfg, req, llmconfig.ResolveOptions{})
+	if err != nil {
+		return gateway.Config{}, err
 	}
-	if value, ok := requestEnvValue(req, "CLAWMANAGER_LLM_API_KEY", "OPENAI_API_KEY"); ok {
-		resolved.LLMAPIKey = value
-		resolved.LLMAPIKeySet = true
-	}
-	if raw, ok := requestEnvValue(req, "CLAWMANAGER_LLM_MODEL", "OPENAI_MODEL"); ok && strings.TrimSpace(raw) != "" {
-		modelIDs, err := parseModelIDs(raw)
-		if err != nil {
-			return gateway.Config{}, err
-		}
-		resolved.LLMModelIDs = modelIDs
-	}
-	return resolved, nil
+	return settings.ApplyTo(cfg), nil
 }
 
 func writeHermesConfigYAML(path string, cfg gateway.Config) error {
@@ -116,6 +106,30 @@ func buildManagedYAML(cfg gateway.Config) string {
 	var builder strings.Builder
 	builder.WriteString(managedConfigStart)
 	builder.WriteString("\nmodel:\n")
+	if cfg.LLMModelsQualified {
+		groups := llmconfig.GroupModelRefs(llmconfig.FromGatewayConfig(cfg).ModelRefs("auto"))
+		if len(groups) > 0 {
+			defaultModel = groups[0].ModelIDs[0]
+			builder.WriteString("  default: ")
+			builder.WriteString(yamlScalar(defaultModel))
+			builder.WriteString("\n")
+			builder.WriteString("  provider: ")
+			builder.WriteString(yamlScalar(groups[0].ProviderID))
+			builder.WriteString("\n")
+			if cfg.LLMBaseURL != "" {
+				builder.WriteString("providers:\n")
+				for _, group := range groups {
+					builder.WriteString("  ")
+					builder.WriteString(yamlScalar(group.ProviderID))
+					builder.WriteString(":\n")
+					writeManagedProviderYAML(&builder, group.ProviderID, cfg.LLMBaseURL, group.ModelIDs[0], group.ModelIDs)
+				}
+			}
+		}
+		builder.WriteString(managedConfigEnd)
+		builder.WriteString("\n")
+		return builder.String()
+	}
 	if defaultModel != "" {
 		builder.WriteString("  default: ")
 		builder.WriteString(yamlScalar(defaultModel))
@@ -224,51 +238,6 @@ func stripManagedBlock(content string) string {
 		end++
 	}
 	return content[:start] + content[end:]
-}
-
-func parseModelIDs(raw string) ([]string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	if strings.HasPrefix(raw, "[") {
-		var parsed []any
-		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-			modelIDs := parseDelimitedModelIDs(strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]"))
-			if len(modelIDs) == 0 {
-				return nil, fmt.Errorf("parse CLAWMANAGER_LLM_MODEL array: %w", err)
-			}
-			return modelIDs, nil
-		}
-		return uniqueModelIDs(parsed), nil
-	}
-	return []string{raw}, nil
-}
-
-func parseDelimitedModelIDs(raw string) []string {
-	parts := strings.Split(raw, ",")
-	values := make([]any, 0, len(parts))
-	for _, part := range parts {
-		id := strings.Trim(strings.TrimSpace(part), `"'`)
-		if id != "" {
-			values = append(values, id)
-		}
-	}
-	return uniqueModelIDs(values)
-}
-
-func uniqueModelIDs(values []any) []string {
-	seen := map[string]bool{}
-	modelIDs := []string{}
-	for _, value := range values {
-		id := strings.TrimSpace(fmt.Sprint(value))
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		modelIDs = append(modelIDs, id)
-	}
-	return modelIDs
 }
 
 func parseEnvFile(content string) map[string]string {
