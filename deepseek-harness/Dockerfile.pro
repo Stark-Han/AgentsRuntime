@@ -2,6 +2,21 @@
 
 ARG WEBTOP_RUNTIME_BASE_IMAGE=ghcr.io/yuan-lab-llm/agentsruntime/openclaw:latest
 
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS clawmanager-agent-builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG AGENT_VERSION=dev
+
+WORKDIR /src/clawmanager-agent
+COPY clawmanager-agent ./
+RUN go mod download
+RUN set -eux; \
+    arch="${TARGETARCH:-amd64}"; \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${arch}" \
+      go build -trimpath -ldflags="-s -w -X main.version=${AGENT_VERSION}" \
+      -o /out/clawmanager-agent ./cmd/clawmanager-agent
+
 FROM golang:1.26-bookworm AS agent-builder
 
 ARG TARGETOS=linux
@@ -27,10 +42,11 @@ COPY deepseek-harness/scripts/start-deepseek-harness-pro /usr/local/bin/start-de
 COPY deepseek-harness/config/pro-agent-config.yaml /defaults/openclaw-agent/config.yaml
 COPY deepseek-harness/config/deepseek-harness-browser.desktop /defaults/.config/autostart/deepseek-harness-browser.desktop
 COPY --from=agent-builder /out/openclaw-agent /usr/local/bin/openclaw-agent
+COPY --from=clawmanager-agent-builder /out/clawmanager-agent /usr/local/bin/clawmanager-agent
 
 RUN set -eux; \
     sed -i 's/\r$//' /usr/local/bin/start-deepseek-harness-pro; \
-    chmod 0755 /usr/local/bin/start-deepseek-harness-pro /usr/local/bin/openclaw-agent; \
+    chmod 0755 /usr/local/bin/start-deepseek-harness-pro /usr/local/bin/openclaw-agent /usr/local/bin/clawmanager-agent; \
     rm -f /defaults/.config/autostart/openclaw-browser.desktop; \
     rm -f /etc/openclaw-agent/config.yaml
 

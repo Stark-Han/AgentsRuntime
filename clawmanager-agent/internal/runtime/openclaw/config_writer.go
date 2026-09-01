@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/iamlovingit/clawmanager-agent/internal/gateway"
+	"github.com/iamlovingit/clawmanager-agent/internal/llmconfig"
 	"github.com/iamlovingit/clawmanager-agent/internal/scheduledtasks"
 )
 
@@ -832,52 +833,15 @@ func chownTree(root string, uid, gid int) error {
 }
 
 func configWithRequestLLMEnv(cfg gateway.Config, req gateway.CreateGatewayRequest) (gateway.Config, error) {
-	resolved := cfg
-	if value, ok := requestEnvValue(req, "CLAWMANAGER_LLM_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"); ok && strings.TrimSpace(value) != "" {
-		resolved.LLMBaseURL = strings.TrimSpace(value)
+	settings, err := llmconfig.ResolveGateway(cfg, req, llmconfig.ResolveOptions{})
+	if err != nil {
+		return gateway.Config{}, err
 	}
-	if value, ok := requestEnvValue(req, "CLAWMANAGER_LLM_API_KEY", "OPENAI_API_KEY"); ok {
-		resolved.LLMAPIKey = value
-		resolved.LLMAPIKeySet = true
-	}
-	if raw, ok := requestEnvValue(req, "CLAWMANAGER_LLM_MODEL", "OPENAI_MODEL"); ok && strings.TrimSpace(raw) != "" {
-		modelIDs, err := parseLLMModelIDs(raw)
-		if err != nil {
-			return gateway.Config{}, err
-		}
-		resolved.LLMModelIDs = modelIDs
-	}
-	if raw, ok := requestEnvValue(req, "CLAWMANAGER_LLM_REASONING"); ok && strings.TrimSpace(raw) != "" {
-		reasoning, err := parseLLMReasoning(raw)
-		if err != nil {
-			return gateway.Config{}, err
-		}
-		resolved.LLMReasoning = reasoning
-	}
-	if raw, ok := requestEnvValue(req, "CLAWMANAGER_LLM_REASONING_CONTROL"); ok && strings.TrimSpace(raw) != "" {
-		controls, err := parseLLMReasoningControl(raw)
-		if err != nil {
-			return gateway.Config{}, err
-		}
-		resolved.LLMReasoningControl = controls
-	}
-	return resolved, nil
+	return settings.ApplyTo(cfg), nil
 }
 
 func requestEnvValue(req gateway.CreateGatewayRequest, keys ...string) (string, bool) {
-	for _, key := range keys {
-		if req.Environment != nil {
-			if value, ok := req.Environment[key]; ok {
-				return value, true
-			}
-		}
-		if req.Env != nil {
-			if value, ok := req.Env[key]; ok {
-				return value, true
-			}
-		}
-	}
-	return "", false
+	return gateway.RequestEnvValue(req, keys...)
 }
 
 func mergeOpenClawLLMConfig(config map[string]any, cfg gateway.Config) {
@@ -888,7 +852,57 @@ func mergeOpenClawLLMConfig(config map[string]any, cfg gateway.Config) {
 
 	models := ensureObject(config, "models")
 	providers := ensureObject(models, "providers")
-	provider := ensureObject(providers, openClawAutoProviderName)
+	modelRefs := llmconfig.FromGatewayConfig(cfg).ModelRefs(openClawAutoProviderName)
+	providerGroups := llmconfig.GroupModelRefs(modelRefs)
+
+	if len(modelRefs) > 0 {
+		providerReasoning := make(map[string]map[string]bool)
+		providerReasoningControl := make(map[string]map[string]string)
+		for _, ref := range modelRefs {
+			if _, exists := providerReasoning[ref.ProviderID]; !exists {
+				providerReasoning[ref.ProviderID] = make(map[string]bool)
+				providerReasoningControl[ref.ProviderID] = make(map[string]string)
+			}
+			if value, exists := openClawReasoningForRef(cfg.LLMReasoning, ref); exists {
+				providerReasoning[ref.ProviderID][ref.ModelID] = value
+			}
+			if value, exists := openClawReasoningControlForRef(cfg.LLMReasoningControl, ref); exists {
+				providerReasoningControl[ref.ProviderID][ref.ModelID] = value
+			}
+		}
+
+		for _, group := range providerGroups {
+			provider := mergeOpenClawProviderConnection(providers, group.ProviderID, cfg)
+			provider["models"] = buildOpenClawProviderModels(
+				provider["models"],
+				group.ModelIDs,
+				providerReasoning[group.ProviderID],
+				providerReasoningControl[group.ProviderID],
+			)
+		}
+
+		agents := ensureObject(config, "agents")
+		defaults := ensureObject(agents, "defaults")
+		model := ensureObject(defaults, "model")
+		primaryModel := modelRefs[0].Qualified
+		model["primary"] = primaryModel
+		defaults["models"] = buildOpenClawAgentModelsFromRefs(defaults["models"], modelRefs)
+		// OpenClaw 2026.7.1 auto-discovers a built-in OpenAI image fallback when
+		// imageModel is unset. ClawManager also exports OPENAI_* compatibility
+		// aliases, so that fallback can look configured even though the user did
+		// not enable it. Keep image calls on the managed provider while preserving
+		// an explicit custom image model.
+		if rawImageModel, exists := defaults["imageModel"]; !exists || rawImageModel == nil {
+			defaults["imageModel"] = map[string]any{"primary": primaryModel}
+		}
+	} else {
+		mergeOpenClawProviderConnection(providers, openClawAutoProviderName, cfg)
+	}
+	normalizeOpenClawProviderAuthContracts(config)
+}
+
+func mergeOpenClawProviderConnection(providers map[string]any, providerID string, cfg gateway.Config) map[string]any {
+	provider := ensureObject(providers, providerID)
 	if cfg.LLMBaseURL != "" {
 		provider["baseUrl"] = cfg.LLMBaseURL
 	}
@@ -901,25 +915,23 @@ func mergeOpenClawLLMConfig(config map[string]any, cfg gateway.Config) {
 	if strings.TrimSpace(configStringValue(provider["auth"])) == "" && strings.TrimSpace(cfg.LLMAPIKey) != "" {
 		provider["auth"] = "api-key"
 	}
-	if len(cfg.LLMModelIDs) > 0 {
-		provider["models"] = buildOpenClawProviderModels(provider["models"], cfg.LLMModelIDs, cfg.LLMReasoning, cfg.LLMReasoningControl)
+	return provider
+}
 
-		agents := ensureObject(config, "agents")
-		defaults := ensureObject(agents, "defaults")
-		model := ensureObject(defaults, "model")
-		primaryModel := qualifiedOpenClawModelID(openClawAutoProviderName, cfg.LLMModelIDs[0])
-		model["primary"] = primaryModel
-		defaults["models"] = buildOpenClawAgentModels(defaults["models"], openClawAutoProviderName, cfg.LLMModelIDs)
-		// OpenClaw 2026.7.1 auto-discovers a built-in OpenAI image fallback when
-		// imageModel is unset. ClawManager also exports OPENAI_* compatibility
-		// aliases, so that fallback can look configured even though the user did
-		// not enable it. Keep image calls on the managed provider while preserving
-		// an explicit custom image model.
-		if rawImageModel, exists := defaults["imageModel"]; !exists || rawImageModel == nil {
-			defaults["imageModel"] = map[string]any{"primary": primaryModel}
-		}
+func openClawReasoningForRef(settings map[string]bool, ref llmconfig.ModelRef) (bool, bool) {
+	return openClawSettingForRef(settings, ref)
+}
+
+func openClawReasoningControlForRef(settings map[string]string, ref llmconfig.ModelRef) (string, bool) {
+	return openClawSettingForRef(settings, ref)
+}
+
+func openClawSettingForRef[T any](settings map[string]T, ref llmconfig.ModelRef) (T, bool) {
+	if value, exists := settings[ref.Qualified]; exists {
+		return value, true
 	}
-	normalizeOpenClawProviderAuthContracts(config)
+	value, exists := settings[ref.ModelID]
+	return value, exists
 }
 
 func normalizeOpenClawProviderAuthContracts(config map[string]any) {
@@ -1009,18 +1021,17 @@ func indexOpenClawModelsByID(existing any) map[string]map[string]any {
 	return index
 }
 
-func buildOpenClawAgentModels(existing any, providerName string, modelIDs []string) map[string]any {
+func buildOpenClawAgentModelsFromRefs(existing any, refs []llmconfig.ModelRef) map[string]any {
 	current, _ := existing.(map[string]any)
-	models := make(map[string]any, len(modelIDs))
-	for _, id := range modelIDs {
-		key := qualifiedOpenClawModelID(providerName, id)
+	models := make(map[string]any, len(refs))
+	for _, ref := range refs {
 		if current != nil {
-			if value, ok := current[key]; ok {
-				models[key] = value
+			if value, ok := current[ref.Qualified]; ok {
+				models[ref.Qualified] = value
 				continue
 			}
 		}
-		models[key] = map[string]any{}
+		models[ref.Qualified] = map[string]any{}
 	}
 	return models
 }
@@ -1042,10 +1053,6 @@ func defaultOpenClawProviderModel(id string, reasoning bool) map[string]any {
 		"contextWindow": 1000000,
 		"maxTokens":     65536,
 	}
-}
-
-func qualifiedOpenClawModelID(providerName, id string) string {
-	return providerName + "/" + id
 }
 
 func displayOpenClawModelName(id string) string {

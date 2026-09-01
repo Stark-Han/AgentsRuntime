@@ -148,19 +148,7 @@ func resolveOpenCodeServerAuth(cfg gateway.Config, req gateway.CreateGatewayRequ
 }
 
 func requestEnvValue(req gateway.CreateGatewayRequest, keys ...string) (string, bool) {
-	for _, key := range keys {
-		if req.Environment != nil {
-			if value, ok := req.Environment[key]; ok {
-				return value, true
-			}
-		}
-		if req.Env != nil {
-			if value, ok := req.Env[key]; ok {
-				return value, true
-			}
-		}
-	}
-	return "", false
+	return gateway.RequestEnvValue(req, keys...)
 }
 
 func setEnv(env []string, key, value string) []string {

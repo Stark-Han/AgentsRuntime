@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/iamlovingit/clawmanager-agent/internal/gateway"
+	"github.com/iamlovingit/clawmanager-agent/internal/llmconfig"
 )
 
 const (
@@ -17,42 +18,33 @@ const (
 	defaultModelID          = "auto"
 )
 
+var builtInProviderIDs = []string{
+	"openai",
+	"anthropic",
+	"google",
+	"amazon-bedrock",
+	"azure",
+	"groq",
+	"mistral",
+	"deepseek",
+}
+
 func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, workspacePath string) error {
 	opencodeHome := filepath.Join(workspacePath, "home", ".opencode")
 	if err := os.MkdirAll(opencodeHome, 0o750); err != nil {
 		return fmt.Errorf("create opencode home: %w", err)
 	}
 
-	baseURL, apiKey, models, err := resolveLLMSettings(cfg, req)
+	settings, err := resolveLLMSettings(cfg, req)
 	if err != nil {
 		return err
 	}
 
 	configPath := filepath.Join(opencodeHome, "opencode.json")
-	doc := map[string]any{
-		"$schema": "https://opencode.ai/config.json",
-		"model":   clawmanagerProviderID + "/" + models[0],
-		"provider": map[string]any{
-			clawmanagerProviderID: map[string]any{
-				"npm":  "@ai-sdk/openai-compatible",
-				"name": clawmanagerProviderName,
-				"options": map[string]any{
-					"baseURL": baseURL,
-					"apiKey":  "{env:CLAWMANAGER_LLM_API_KEY}",
-				},
-				"models": modelsMap(models),
-			},
-		},
-		"enabled_providers":  []string{clawmanagerProviderID},
-		"disabled_providers": []string{"openai", "anthropic", "google", "amazon-bedrock", "azure", "groq", "mistral", "deepseek"},
-	}
-	_ = apiKey // referenced via env substitution in config; required to exist at write time
-
-	raw, err := json.MarshalIndent(doc, "", "  ")
+	raw, err := RenderConfig(settings)
 	if err != nil {
-		return fmt.Errorf("marshal opencode config: %w", err)
+		return err
 	}
-	raw = append(raw, '\n')
 	if err := os.WriteFile(configPath, raw, 0o640); err != nil {
 		return fmt.Errorf("write opencode config: %w", err)
 	}
@@ -62,70 +54,110 @@ func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, wo
 	return nil
 }
 
-func resolveLLMSettings(cfg gateway.Config, req gateway.CreateGatewayRequest) (baseURL, apiKey string, models []string, err error) {
-	baseURL = strings.TrimRight(strings.TrimSpace(cfg.LLMBaseURL), "/")
-	if value, ok := requestEnvValue(req, "CLAWMANAGER_LLM_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"); ok {
-		baseURL = strings.TrimRight(strings.TrimSpace(value), "/")
-	}
-	if baseURL == "" {
-		return "", "", nil, fmt.Errorf("missing OpenCode LLM base URL")
-	}
-
-	apiKey = strings.TrimSpace(cfg.LLMAPIKey)
-	if value, ok := requestEnvValue(req, "CLAWMANAGER_LLM_API_KEY", "OPENAI_API_KEY", "CLAWMANAGER_INSTANCE_TOKEN"); ok {
-		apiKey = strings.TrimSpace(value)
-	}
-	if apiKey == "" {
-		return "", "", nil, fmt.Errorf("missing OpenCode LLM API key")
-	}
-
-	models = []string{defaultModelID}
-	if value, ok := requestEnvValue(req, "CLAWMANAGER_LLM_MODEL", "OPENAI_MODEL"); ok {
-		models = appendModels(models, value)
-	}
-	return baseURL, apiKey, models, nil
+func resolveLLMSettings(cfg gateway.Config, req gateway.CreateGatewayRequest) (llmconfig.Settings, error) {
+	return llmconfig.ResolveGateway(cfg, req, openCodeResolveOptions())
 }
 
-func appendModels(models []string, raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return models
+func LoadLLMSettingsFromEnv() (llmconfig.Settings, error) {
+	return llmconfig.LoadFromEnv(openCodeResolveOptions())
+}
+
+func openCodeResolveOptions() llmconfig.ResolveOptions {
+	return llmconfig.ResolveOptions{
+		APIKeyEnvNames:    []string{"CLAWMANAGER_LLM_API_KEY", "OPENAI_API_KEY", "CLAWMANAGER_INSTANCE_TOKEN"},
+		LegacyModelPrefix: []string{defaultModelID},
 	}
-	seen := map[string]bool{}
-	for _, model := range models {
-		seen[model] = true
+}
+
+func normalizeLLMSettings(settings llmconfig.Settings) (llmconfig.Settings, error) {
+	if settings.BaseURL == "" {
+		return llmconfig.Settings{}, fmt.Errorf("missing OpenCode LLM base URL")
 	}
-	add := func(id string) {
-		id = strings.TrimSpace(id)
-		if id == "" || seen[id] {
-			return
-		}
-		seen[id] = true
-		models = append(models, id)
+	if !settings.APIKeySet || strings.TrimSpace(settings.APIKey) == "" {
+		return llmconfig.Settings{}, fmt.Errorf("missing OpenCode LLM API key")
+	}
+	if len(settings.ModelIDs) == 0 {
+		settings.ModelIDs = []string{defaultModelID}
+		settings.ModelsQualified = false
+	}
+	return settings, nil
+}
+
+func RenderConfig(settings llmconfig.Settings) ([]byte, error) {
+	settings, err := normalizeLLMSettings(settings)
+	if err != nil {
+		return nil, err
 	}
 
-	if strings.HasPrefix(raw, "[") {
-		var list []string
-		if err := json.Unmarshal([]byte(raw), &list); err == nil {
-			for _, item := range list {
-				add(item)
-			}
-			return models
+	modelID := clawmanagerProviderID + "/" + settings.ModelIDs[0]
+	apiKeyEnv := strings.TrimSpace(settings.APIKeySource)
+	if apiKeyEnv == "" {
+		apiKeyEnv = "CLAWMANAGER_LLM_API_KEY"
+	}
+	providers := legacyProviderConfig(settings.BaseURL, apiKeyEnv, settings.ModelIDs)
+	enabledProviders := []string{clawmanagerProviderID}
+	if settings.ModelsQualified {
+		refs := settings.ModelRefs("auto")
+		if len(refs) == 0 {
+			return nil, fmt.Errorf("missing OpenCode LLM models")
 		}
-		var objects []map[string]any
-		if err := json.Unmarshal([]byte(raw), &objects); err == nil {
-			for _, item := range objects {
-				if id, ok := item["id"].(string); ok {
-					add(id)
-				} else if id, ok := item["model"].(string); ok {
-					add(id)
-				}
-			}
-			return models
+		modelID = refs[0].Qualified
+		providers, enabledProviders = qualifiedProviderConfig(settings.BaseURL, apiKeyEnv, llmconfig.GroupModelRefs(refs))
+	}
+	doc := map[string]any{
+		"$schema":            "https://opencode.ai/config.json",
+		"model":              modelID,
+		"provider":           providers,
+		"enabled_providers":  enabledProviders,
+		"disabled_providers": disabledProviders(enabledProviders),
+	}
+	raw, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal opencode config: %w", err)
+	}
+	return append(raw, '\n'), nil
+}
+
+func legacyProviderConfig(baseURL, apiKeyEnv string, models []string) map[string]any {
+	return map[string]any{
+		clawmanagerProviderID: providerConfig(clawmanagerProviderName, baseURL, apiKeyEnv, models),
+	}
+}
+
+func qualifiedProviderConfig(baseURL, apiKeyEnv string, groups []llmconfig.ProviderModels) (map[string]any, []string) {
+	providers := make(map[string]any)
+	providerOrder := make([]string, 0, len(groups))
+	for _, group := range groups {
+		providerOrder = append(providerOrder, group.ProviderID)
+		providers[group.ProviderID] = providerConfig(group.ProviderID, baseURL, apiKeyEnv, group.ModelIDs)
+	}
+	return providers, providerOrder
+}
+
+func providerConfig(name, baseURL, apiKeyEnv string, models []string) map[string]any {
+	return map[string]any{
+		"npm":  "@ai-sdk/openai-compatible",
+		"name": name,
+		"options": map[string]any{
+			"baseURL": baseURL,
+			"apiKey":  "{env:" + apiKeyEnv + "}",
+		},
+		"models": modelsMap(models),
+	}
+}
+
+func disabledProviders(enabled []string) []string {
+	enabledSet := make(map[string]struct{}, len(enabled))
+	for _, providerID := range enabled {
+		enabledSet[providerID] = struct{}{}
+	}
+	disabled := make([]string, 0, len(builtInProviderIDs))
+	for _, providerID := range builtInProviderIDs {
+		if _, exists := enabledSet[providerID]; !exists {
+			disabled = append(disabled, providerID)
 		}
 	}
-	add(raw)
-	return models
+	return disabled
 }
 
 func modelsMap(models []string) map[string]any {

@@ -171,19 +171,29 @@ func applyEnvironmentMap(env []string, values map[string]string) []string {
 }
 
 func requestEnvValue(req CreateGatewayRequest, keys ...string) (string, bool) {
+	_, value, ok := RequestEnvEntry(req, keys...)
+	return value, ok
+}
+
+func RequestEnvValue(req CreateGatewayRequest, keys ...string) (string, bool) {
+	_, value, ok := RequestEnvEntry(req, keys...)
+	return value, ok
+}
+
+func RequestEnvEntry(req CreateGatewayRequest, keys ...string) (string, string, bool) {
 	for _, key := range keys {
 		if req.Environment != nil {
 			if value, ok := req.Environment[key]; ok {
-				return value, true
+				return key, value, true
 			}
 		}
 		if req.Env != nil {
 			if value, ok := req.Env[key]; ok {
-				return value, true
+				return key, value, true
 			}
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 func envPathJoin(base string, elems ...string) string {

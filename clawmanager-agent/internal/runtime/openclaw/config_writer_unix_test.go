@@ -61,7 +61,7 @@ func TestWriteOpenClawGatewayConfigChownsScheduledTasksJobsFile(t *testing.T) {
 		LLMAPIKeySet:    true,
 		LLMModelIDs:     []string{"gpt-5.5"},
 	}
-	if err := WriteGatewayConfig(cfg, req, workspace); err != nil {
+	if err := WriteGatewayConfig(cfg, req, workspace, 20003); err != nil {
 		t.Fatalf("WriteGatewayConfig() error = %v", err)
 	}
 

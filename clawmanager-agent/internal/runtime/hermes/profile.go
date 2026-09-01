@@ -89,6 +89,7 @@ func (p Profile) GatewayEnv(base []string, cfg gateway.Config, req gateway.Creat
 //  3. create-request access token aliases (CLAWMANAGER_DASHBOARD_BASIC_AUTH_PASSWORD,
 //     CLAWMANAGER_INSTANCE_ACCESS_TOKEN, CLAWMANAGER_INSTANCE_TOKEN, CLAWMANAGER_LLM_API_KEY,
 //     OPENAI_API_KEY, CLAWMANAGER_GATEWAY_TOKEN)
+//
 // Username defaults to "clawmanager" unless already set.
 func applyDashboardBasicAuthEnv(env []string, cfg gateway.Config, req gateway.CreateGatewayRequest) []string {
 	username, hasUsername := requestEnvValue(req, "HERMES_DASHBOARD_BASIC_AUTH_USERNAME")
@@ -147,19 +148,7 @@ func (p Profile) HealthChecker(cfg gateway.Config) gateway.GatewayHealthChecker 
 }
 
 func requestEnvValue(req gateway.CreateGatewayRequest, keys ...string) (string, bool) {
-	for _, key := range keys {
-		if req.Environment != nil {
-			if value, ok := req.Environment[key]; ok {
-				return value, true
-			}
-		}
-		if req.Env != nil {
-			if value, ok := req.Env[key]; ok {
-				return value, true
-			}
-		}
-	}
-	return "", false
+	return gateway.RequestEnvValue(req, keys...)
 }
 
 func setEnv(env []string, key, value string) []string {

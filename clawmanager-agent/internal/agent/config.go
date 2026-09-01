@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/iamlovingit/clawmanager-agent/internal/gateway"
+	"github.com/iamlovingit/clawmanager-agent/internal/llmconfig"
 	runtimeprofiles "github.com/iamlovingit/clawmanager-agent/internal/runtime"
 	"github.com/iamlovingit/clawmanager-agent/internal/runtime/generic"
 	"github.com/iamlovingit/clawmanager-agent/internal/runtime/hermes"
@@ -111,32 +111,11 @@ func LoadConfigFromEnv() (Config, error) {
 	cfg.AllowedOrigins = uniqueOrigins(backendOrigin)
 	cfg.PublicOrigin = backendOrigin
 	cfg.TrustedProxies = trustedProxiesFromEnvOrPodIP(cfg.PodIP)
-	cfg.LLMBaseURL = strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_BASE_URL"))
-	if apiKey, ok := os.LookupEnv("CLAWMANAGER_LLM_API_KEY"); ok {
-		cfg.LLMAPIKey = apiKey
-		cfg.LLMAPIKeySet = true
+	llmSettings, err := llmconfig.LoadFromEnv(llmconfig.ResolveOptions{})
+	if err != nil {
+		return Config{}, err
 	}
-	if raw := strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_MODEL")); raw != "" {
-		modelIDs, err := parseLLMModelIDs(raw)
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.LLMModelIDs = modelIDs
-	}
-	if raw := strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_REASONING")); raw != "" {
-		var reasoning map[string]bool
-		if err := json.Unmarshal([]byte(raw), &reasoning); err != nil {
-			return Config{}, fmt.Errorf("parse CLAWMANAGER_LLM_REASONING: %w", err)
-		}
-		cfg.LLMReasoning = reasoning
-	}
-	if raw := strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_REASONING_CONTROL")); raw != "" {
-		var controls map[string]string
-		if err := json.Unmarshal([]byte(raw), &controls); err != nil {
-			return Config{}, fmt.Errorf("parse CLAWMANAGER_LLM_REASONING_CONTROL: %w", err)
-		}
-		cfg.LLMReasoningControl = controls
-	}
+	cfg = llmSettings.ApplyTo(cfg)
 
 	if cfg.ControlToken == "" {
 		return Config{}, errors.New("RUNTIME_AGENT_CONTROL_TOKEN is required")
@@ -349,58 +328,6 @@ func uniqueOrigins(values ...string) []string {
 		out = append(out, value)
 	}
 	return out
-}
-
-func parseLLMModelIDs(raw string) ([]string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	if strings.HasPrefix(raw, "[") {
-		var parsed []any
-		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-			modelIDs := parseDelimitedLLMModelIDs(strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]"))
-			if len(modelIDs) == 0 {
-				return nil, fmt.Errorf("parse CLAWMANAGER_LLM_MODEL array: %w", err)
-			}
-			return modelIDs, nil
-		}
-		modelIDs := uniqueLLMModelIDs(parsed)
-		if len(modelIDs) == 0 {
-			return nil, fmt.Errorf("parse CLAWMANAGER_LLM_MODEL array: no model ids found")
-		}
-		return modelIDs, nil
-	}
-	return []string{raw}, nil
-}
-
-func parseDelimitedLLMModelIDs(raw string) []string {
-	parts := strings.Split(raw, ",")
-	values := make([]any, 0, len(parts))
-	for _, part := range parts {
-		id := strings.Trim(strings.TrimSpace(part), `"'`)
-		if id != "" {
-			values = append(values, id)
-		}
-	}
-	return uniqueLLMModelIDs(values)
-}
-
-func uniqueLLMModelIDs(values []any) []string {
-	seen := make(map[string]struct{}, len(values))
-	modelIDs := make([]string, 0, len(values))
-	for _, value := range values {
-		id := strings.TrimSpace(fmt.Sprint(value))
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		modelIDs = append(modelIDs, id)
-	}
-	return modelIDs
 }
 
 func cleanPath(path string) string {

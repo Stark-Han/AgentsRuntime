@@ -773,6 +773,113 @@ func TestWriteOpenClawGatewayConfigUsesRequestEnvironmentLLMOverrides(t *testing
 	}
 }
 
+func TestWriteOpenClawGatewayConfigGroupsModelsByConfiguredProvider(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "openclaw", "user-45", "instance-69")
+	req := CreateGatewayRequest{
+		InstanceID: 69,
+		UserID:     45,
+		UID:        200069,
+		GID:        200069,
+		Environment: map[string]string{
+			"CLAWMANAGER_LLM_BASE_URL":        "http://clawmanager-gateway.clawmanager-system.svc.cluster.local:9001/api/v1/gateway/llm",
+			"CLAWMANAGER_LLM_API_KEY":         "instance-token",
+			"CLAWMANAGER_LLM_MODEL":           `["auto","deepseek","deepseek-v4-pro","yuan-embedding-1.0"]`,
+			"CLAWMANAGER_LLM_PROVIDER_MODELS": `["auto/auto","deepseek/deepseek","deepseek/deepseek-v4-pro","modellist/yuan-embedding-1.0"]`,
+			"CLAWMANAGER_LLM_REASONING":       `{"auto/auto":false,"deepseek/deepseek-v4-pro":true}`,
+		},
+	}
+	if err := WriteGatewayConfig(Config{GatewayAuthMode: "trusted-proxy"}, req, workspace, 20003); err != nil {
+		t.Fatalf("WriteGatewayConfig() error = %v", err)
+	}
+
+	merged := readOpenClawConfigForTest(t, filepath.Join(workspace, "home", ".openclaw", "openclaw.json"))
+	providers := objectAt(t, objectAt(t, merged, "models"), "providers")
+	autoProvider := objectAt(t, providers, "auto")
+	deepseekProvider := objectAt(t, providers, "deepseek")
+	modellistProvider := objectAt(t, providers, "modellist")
+	if got := modelIDSet(autoProvider["models"].([]any)); len(got) != 1 || !got["auto"] {
+		t.Fatalf("models.providers.auto.models = %#v, want only auto", autoProvider["models"])
+	}
+	if got := modelIDSet(deepseekProvider["models"].([]any)); len(got) != 2 || !got["deepseek"] || !got["deepseek-v4-pro"] {
+		t.Fatalf("models.providers.deepseek.models = %#v, want configured DeepSeek models", deepseekProvider["models"])
+	}
+	if got := modelIDSet(modellistProvider["models"].([]any)); len(got) != 1 || !got["yuan-embedding-1.0"] {
+		t.Fatalf("models.providers.modellist.models = %#v, want configured local provider model", modellistProvider["models"])
+	}
+	if deepseekProvider["baseUrl"] != req.Environment["CLAWMANAGER_LLM_BASE_URL"] || modellistProvider["apiKey"] != "instance-token" {
+		t.Fatalf("grouped providers did not inherit the managed gateway connection: %#v", providers)
+	}
+
+	defaults := objectAt(t, objectAt(t, merged, "agents"), "defaults")
+	if objectAt(t, defaults, "model")["primary"] != "auto/auto" {
+		t.Fatalf("agents.defaults.model.primary = %#v, want auto/auto", objectAt(t, defaults, "model")["primary"])
+	}
+	agentModels := objectAt(t, defaults, "models")
+	for _, qualifiedID := range []string{"auto/auto", "deepseek/deepseek", "deepseek/deepseek-v4-pro", "modellist/yuan-embedding-1.0"} {
+		if _, exists := agentModels[qualifiedID]; !exists {
+			t.Fatalf("agents.defaults.models missing %q: %#v", qualifiedID, agentModels)
+		}
+	}
+	deepseekModels := deepseekProvider["models"].([]any)
+	if deepseekModels[1].(map[string]any)["reasoning"] != true {
+		t.Fatalf("qualified reasoning setting was not applied: %#v", deepseekModels[1])
+	}
+}
+
+func TestMergeOpenClawLLMConfigUpdatesConnectionWithoutModelOverride(t *testing.T) {
+	config := map[string]any{
+		"models": map[string]any{
+			"providers": map[string]any{
+				"auto": map[string]any{
+					"baseUrl": "http://old.example/v1",
+					"apiKey":  "old-token",
+					"models":  []any{map[string]any{"id": "existing"}},
+				},
+			},
+		},
+	}
+
+	mergeOpenClawLLMConfig(config, Config{
+		LLMBaseURL:   "http://new.example/v1",
+		LLMAPIKey:    "new-token",
+		LLMAPIKeySet: true,
+	})
+
+	provider := objectAt(t, objectAt(t, objectAt(t, config, "models"), "providers"), "auto")
+	if provider["baseUrl"] != "http://new.example/v1" || provider["apiKey"] != "new-token" {
+		t.Fatalf("provider connection = %#v", provider)
+	}
+	models := provider["models"].([]any)
+	if len(models) != 1 || models[0].(map[string]any)["id"] != "existing" {
+		t.Fatalf("provider models changed during connection-only update: %#v", models)
+	}
+}
+
+func TestMergeOpenClawLLMConfigKeepsSlashInLegacyModelID(t *testing.T) {
+	config := map[string]any{}
+	mergeOpenClawLLMConfig(config, Config{
+		LLMBaseURL:         "http://gateway.example/v1",
+		LLMAPIKey:          "token",
+		LLMAPIKeySet:       true,
+		LLMModelIDs:        []string{"meta-llama/Llama-3.1"},
+		LLMModelsQualified: false,
+	})
+
+	providers := objectAt(t, objectAt(t, config, "models"), "providers")
+	if _, exists := providers["meta-llama"]; exists {
+		t.Fatalf("legacy model id was split into a provider: %#v", providers)
+	}
+	autoProvider := objectAt(t, providers, "auto")
+	models := autoProvider["models"].([]any)
+	if len(models) != 1 || models[0].(map[string]any)["id"] != "meta-llama/Llama-3.1" {
+		t.Fatalf("legacy provider models = %#v", models)
+	}
+	defaults := objectAt(t, objectAt(t, config, "agents"), "defaults")
+	if objectAt(t, defaults, "model")["primary"] != "auto/meta-llama/Llama-3.1" {
+		t.Fatalf("primary model = %#v", objectAt(t, defaults, "model")["primary"])
+	}
+}
+
 func TestWriteOpenClawGatewayConfigMergesRequestChannelsIntoWorkspaceConfig(t *testing.T) {
 	workspace := filepath.Join(t.TempDir(), "openclaw", "user-45", "instance-70")
 	configPath := filepath.Join(workspace, "home", ".openclaw", "openclaw.json")

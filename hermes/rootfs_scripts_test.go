@@ -303,6 +303,27 @@ func TestApplyRuntimeConfigAliasesClawManagerProviderAsCustom(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeConfigUsesSharedLLMResolver(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("rootfs", "usr", "local", "bin", "hermes-apply-runtime-config"))
+	if err != nil {
+		t.Fatalf("read hermes-apply-runtime-config: %v", err)
+	}
+	script := string(data)
+	for _, want := range []string{
+		`clawmanager-agent llm-config`,
+		`--format canonical`,
+		`CLAWMANAGER_LLM_RESOLVED_CONFIG_JSON`,
+		`resolved_llm.get("providers")`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("hermes-apply-runtime-config missing shared LLM resolver contract %q", want)
+		}
+	}
+	if strings.Contains(script, `model_ref.partition("/")`) {
+		t.Fatal("hermes-apply-runtime-config must not reimplement provider/model parsing")
+	}
+}
+
 func TestApplyRuntimeConfigAppliesScheduledTasks(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("rootfs", "usr", "local", "bin", "hermes-apply-runtime-config"))
 	if err != nil {

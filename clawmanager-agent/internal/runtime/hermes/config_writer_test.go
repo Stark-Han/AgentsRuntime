@@ -133,6 +133,50 @@ func TestWriteGatewayConfigWritesHermesWorkspaceConfig(t *testing.T) {
 	}
 }
 
+func TestWriteGatewayConfigGroupsModelsByConfiguredProvider(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "hermes", "user-45", "instance-64")
+	req := gateway.CreateGatewayRequest{
+		AgentType:  "hermes",
+		InstanceID: 64,
+		UserID:     45,
+		UID:        os.Getuid(),
+		GID:        os.Getgid(),
+		Environment: map[string]string{
+			"CLAWMANAGER_LLM_BASE_URL":        "http://gateway.example/v1",
+			"CLAWMANAGER_LLM_API_KEY":         "instance-token",
+			"CLAWMANAGER_LLM_MODEL":           `["auto","deepseek","deepseek-v4-pro","yuan-embedding-1.0"]`,
+			"CLAWMANAGER_LLM_PROVIDER_MODELS": `["auto/auto","deepseek/deepseek","deepseek/deepseek-v4-pro","modellist/yuan-embedding-1.0"]`,
+		},
+	}
+
+	if err := WriteGatewayConfig(gateway.Config{}, req, workspace); err != nil {
+		t.Fatalf("WriteGatewayConfig() error = %v", err)
+	}
+
+	configData, err := os.ReadFile(filepath.Join(workspace, "home", ".hermes", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configText := string(configData)
+	for _, want := range []string{
+		"default: auto",
+		"provider: auto",
+		"  auto:\n",
+		"  deepseek:\n",
+		"      deepseek: {}",
+		"      deepseek-v4-pro: {}",
+		"  modellist:\n",
+		"      yuan-embedding-1.0: {}",
+	} {
+		if !strings.Contains(configText, want) {
+			t.Fatalf("config.yaml missing %q:\n%s", want, configText)
+		}
+	}
+	if strings.Contains(configText, "  clawmanager:\n") || strings.Contains(configText, "  custom:\n") {
+		t.Fatalf("config.yaml retained legacy provider aliases:\n%s", configText)
+	}
+}
+
 func stringSlice(value any) []string {
 	items, _ := value.([]any)
 	out := make([]string, 0, len(items))
