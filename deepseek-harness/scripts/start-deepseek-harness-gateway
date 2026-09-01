@@ -14,7 +14,10 @@ if [ "${gateway_port}" -lt 1 ] || [ "${gateway_port}" -gt 65535 ]; then
 fi
 
 export DSH_HOME="${DSH_HOME:-${HOME:-/tmp}/.dsh}"
-export DSH_BIND_HOST="${DSH_BIND_HOST:-0.0.0.0}"
+proxy_bind_host="${DSH_BIND_HOST:-0.0.0.0}"
+# The managed proxy owns the Pod-facing socket. Keep DSH itself on loopback so
+# neither BrowserAuth nor plugin-specific trust settings can expose its API.
+export DSH_BIND_HOST=127.0.0.1
 export DSH_TELEMETRY_DISABLED="${DSH_TELEMETRY_DISABLED:-1}"
 mkdir -p "${DSH_HOME}" "${DSH_HOME}/skills"
 
@@ -30,6 +33,15 @@ export CLAWMANAGER_LLM_RESOLVED_CONFIG_JSON="${resolved_llm_config}"
 unset RUNTIME_AGENT_CONTROL_TOKEN RUNTIME_AGENT_REPORT_TOKEN
 unset CLAWMANAGER_AGENT_CONTROL_TOKEN CLAWMANAGER_AGENT_REPORT_TOKEN
 
-exec dsh web \
+# ClawManager mounts its supervisor binary over /usr/local/bin/clawmanager-agent.
+# Use the image-owned copy so this DSH-specific subcommand cannot be shadowed by
+# an independently released runtime-agent overlay.
+exec /usr/local/libexec/clawmanager-agent-image dsh-web-proxy \
+	--listen-host "${proxy_bind_host}" \
+	--port "${gateway_port}" \
+	-- \
+	dsh web \
   --patch /usr/local/share/deepseek-harness/managed.cordis.patch.yml \
-  --port "${gateway_port}"
+	--host 127.0.0.1 \
+	--port 0 \
+	--no-open
