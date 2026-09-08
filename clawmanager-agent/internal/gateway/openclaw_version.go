@@ -20,8 +20,10 @@ var openClaw81Capabilities = []string{
 	"openclaw.session-continuity-v1",
 	"openclaw.runtime-standby-v1",
 	"openclaw.upgrade-capsule-v2",
+	"openclaw.upgrade-capsule-v3",
 	"openclaw.session-sqlite-preserve-v1",
 	"openclaw.upgrade-preflight-v3",
+	"openclaw.upgrade-preflight-v4",
 	"redis-team.group-hooks-v1",
 }
 

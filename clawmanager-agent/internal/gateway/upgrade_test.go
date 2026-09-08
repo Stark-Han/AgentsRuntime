@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -274,6 +275,30 @@ func TestSessionSQLiteMigrationUsesOfficialTransactionalPhases(t *testing.T) {
 	}
 }
 
+func TestDoctorMigrationAuthorityIsRestrictedToNonInteractiveRepair(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want bool
+	}{
+		{args: []string{"doctor", "--fix", "--yes", "--non-interactive"}, want: true},
+		{args: []string{"doctor", "--repair", "--non-interactive"}, want: true},
+		{args: []string{"doctor", "--fix"}, want: false},
+		{args: []string{"config", "validate", "--non-interactive", "--fix"}, want: false},
+		{args: []string{"gateway", "run"}, want: false},
+	} {
+		if got := isOpenClawDoctorRepairCommand(test.args); got != test.want {
+			t.Fatalf("isOpenClawDoctorRepairCommand(%v) = %v, want %v", test.args, got, test.want)
+		}
+	}
+}
+
+func TestDoctorFailureSummaryReportsLegacyExecApprovals(t *testing.T) {
+	got := safeOpenClawFailureSummary([]byte("Legacy exec approvals exist at /secret/home/.openclaw/exec-approvals.json. Run openclaw doctor --fix.\n"))
+	if !strings.Contains(strings.ToLower(got), "legacy exec approvals") || strings.Contains(got, "/secret/home") {
+		t.Fatalf("summary = %q", got)
+	}
+}
+
 func TestSessionSQLiteRestoreReceiptModeMustMatchRequest(t *testing.T) {
 	result := SessionSQLiteRestoreResult{InstanceID: 209, Status: "restored", PreservedSessionSQLite: true}
 	request := WorkspaceUpgradeRequest{InstanceID: 209, PreserveSessionSQLite: true}
@@ -512,9 +537,13 @@ func TestUpgradeStateCapsuleRestoresOnlyControlStateAndDoctorWorkspaceFiles(t *t
 	openClawDir := filepath.Join(workspace, "home", ".openclaw")
 	stateFile := filepath.Join(openClawDir, "state", "openclaw.sqlite")
 	cronFile := filepath.Join(openClawDir, "cron", "jobs.json")
+	execApprovals := filepath.Join(openClawDir, "exec-approvals.json")
+	deviceIdentity := filepath.Join(openClawDir, "identity", "device.json")
+	agentControl := filepath.Join(openClawDir, "agents", "main", "agent", "openclaw-agent.sqlite")
 	heartbeat := filepath.Join(openClawDir, "workspace", "HEARTBEAT.md")
+	workspaceState := filepath.Join(openClawDir, "workspace", ".openclaw", "workspace-state.json")
 	project := filepath.Join(workspace, "project", "keep.txt")
-	for path, data := range map[string][]byte{stateFile: []byte("old-state"), cronFile: []byte("old-cron"), heartbeat: []byte("old-heartbeat"), project: []byte("user-project")} {
+	for path, data := range map[string][]byte{stateFile: []byte("old-state"), cronFile: []byte("old-cron"), execApprovals: []byte("old-approvals"), deviceIdentity: []byte("old-device"), agentControl: []byte("old-agent-control"), heartbeat: []byte("old-heartbeat"), workspaceState: []byte("old-workspace-state"), project: []byte("user-project")} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -526,7 +555,7 @@ func TestUpgradeStateCapsuleRestoresOnlyControlStateAndDoctorWorkspaceFiles(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if capsule.TotalBytes == 0 || !capsule.ControlDirs["state"] || !capsule.ControlDirs["cron"] || !capsule.WorkspaceFiles["HEARTBEAT.md"] {
+	if capsule.SchemaVersion != 2 || capsule.TotalBytes == 0 || !capsule.ControlDirs["state"] || !capsule.ControlDirs["cron"] || !capsule.ControlDirs["identity"] || !capsule.ControlDirs["agents/main/agent"] || capsule.ControlFiles["exec-approvals.json"].SHA256 == "" || !capsule.WorkspaceFiles["HEARTBEAT.md"] || !capsule.WorkspaceFiles[filepath.Join(".openclaw", "workspace-state.json")] {
 		t.Fatalf("capsule = %+v", capsule)
 	}
 	if err := os.WriteFile(stateFile, []byte("new-state"), 0o600); err != nil {
@@ -538,6 +567,14 @@ func TestUpgradeStateCapsuleRestoresOnlyControlStateAndDoctorWorkspaceFiles(t *t
 	if err := os.WriteFile(heartbeat, []byte("new-heartbeat"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for path, data := range map[string][]byte{execApprovals: []byte("new-approvals"), deviceIdentity: []byte("new-device"), agentControl: []byte("new-agent-control"), workspaceState: []byte("new-workspace-state"), filepath.Join(openClawDir, "new-doctor-state.json"): []byte("target-only")} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	restored, err := mgr.restoreOpenClawStateCapsule(workspace, req)
 	if err != nil {
 		t.Fatal(err)
@@ -545,11 +582,91 @@ func TestUpgradeStateCapsuleRestoresOnlyControlStateAndDoctorWorkspaceFiles(t *t
 	if !restored {
 		t.Fatal("state capsule was not restored")
 	}
-	for path, want := range map[string]string{stateFile: "old-state", cronFile: "old-cron", heartbeat: "old-heartbeat", project: "user-project"} {
+	for path, want := range map[string]string{stateFile: "old-state", cronFile: "old-cron", execApprovals: "old-approvals", deviceIdentity: "old-device", agentControl: "old-agent-control", heartbeat: "old-heartbeat", workspaceState: "old-workspace-state", project: "user-project"} {
 		got, err := os.ReadFile(path)
 		if err != nil || string(got) != want {
 			t.Fatalf("%s = %q, %v; want %q", path, got, err, want)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(openClawDir, "new-doctor-state.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target-only Doctor state was not quarantined: %v", err)
+	}
+}
+
+func TestUpgradeCompatibilityProbeIncludesTopLevelDoctorState(t *testing.T) {
+	root := t.TempDir()
+	mgr := NewGatewayManager(Config{RuntimeType: "openclaw", OpenClawVersion: OpenClaw81Version, WorkspaceRoot: root, PodUID: "pod-target"}, &upgradeTestStarter{}, nil)
+	req := WorkspaceUpgradeRequest{RolloutID: "rollout-probe", InstanceID: 26, UserID: 8, Generation: 1, UID: os.Getuid(), GID: os.Getgid()}
+	workspace, err := mgr.workspaceForUpgrade(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openClawDir := filepath.Join(workspace, "home", ".openclaw")
+	for path, data := range map[string][]byte{
+		filepath.Join(openClawDir, "exec-approvals.json"):     []byte(`{"version":1}`),
+		filepath.Join(openClawDir, "identity", "device.json"): []byte(`{"version":1}`),
+		filepath.Join(openClawDir, "openclaw.json"):           []byte(`{"agents":{"defaults":{"workspace":"` + filepath.ToSlash(filepath.Join(openClawDir, "workspace")) + `"}}}`),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	probeRoot, probeHome, _, err := mgr.createUpgradeCompatibilityProbe(workspace, map[string]any{}, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer removeUpgradeProbe(probeRoot)
+	for _, rel := range []string{"exec-approvals.json", filepath.Join("identity", "device.json")} {
+		if _, err := os.Stat(filepath.Join(probeHome, ".openclaw", rel)); err != nil {
+			t.Fatalf("probe omitted %s: %v", rel, err)
+		}
+	}
+}
+
+func TestSchemaV1StateCapsuleDoesNotRemoveNewerWorkspaceStateInputs(t *testing.T) {
+	root := t.TempDir()
+	mgr := NewGatewayManager(Config{RuntimeType: "openclaw", OpenClawVersion: OpenClaw81Version, WorkspaceRoot: root, PodUID: "pod-target"}, &upgradeTestStarter{}, nil)
+	req := WorkspaceUpgradeRequest{RolloutID: "rollout-v1-compat", InstanceID: 27, UserID: 8, Generation: 1, UID: os.Getuid(), GID: os.Getgid()}
+	workspace, err := mgr.workspaceForUpgrade(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceState := filepath.Join(workspace, "home", ".openclaw", "workspace", ".openclaw", "workspace-state.json")
+	if err := os.MkdirAll(filepath.Dir(workspaceState), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workspaceState, []byte("pre-existing-v1-untracked-state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	capsuleDir := mgr.configCapsuleDir(req)
+	if err := os.MkdirAll(capsuleDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := json.Marshal(upgradeStateCapsule{
+		SchemaVersion:  1,
+		InstanceID:     req.InstanceID,
+		WorkspaceFiles: map[string]bool{"HEARTBEAT.md": false, "TOOLS.md": false},
+		ControlDirs:    map[string]bool{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(capsuleDir, "state-capsule.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := mgr.restoreOpenClawStateCapsule(workspace, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored {
+		t.Fatal("schema v1 capsule was not accepted")
+	}
+	got, err := os.ReadFile(workspaceState)
+	if err != nil || string(got) != "pre-existing-v1-untracked-state" {
+		t.Fatalf("schema v1 rollback modified newer workspace state: %q, %v", got, err)
 	}
 }
 

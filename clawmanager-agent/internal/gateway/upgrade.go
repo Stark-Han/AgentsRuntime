@@ -98,13 +98,20 @@ type upgradeConfigCapsule struct {
 }
 
 type upgradeStateCapsule struct {
-	SchemaVersion  int             `json:"schema_version"`
-	InstanceID     int             `json:"instance_id"`
-	OriginalExists bool            `json:"original_exists"`
-	TotalBytes     int64           `json:"total_bytes"`
-	FileCount      int64           `json:"file_count"`
-	WorkspaceFiles map[string]bool `json:"workspace_files"`
-	ControlDirs    map[string]bool `json:"control_dirs"`
+	SchemaVersion  int                                `json:"schema_version"`
+	InstanceID     int                                `json:"instance_id"`
+	OriginalExists bool                               `json:"original_exists"`
+	TotalBytes     int64                              `json:"total_bytes"`
+	FileCount      int64                              `json:"file_count"`
+	WorkspaceFiles map[string]bool                    `json:"workspace_files"`
+	ControlDirs    map[string]bool                    `json:"control_dirs"`
+	ControlFiles   map[string]upgradeStateCapsuleFile `json:"control_files,omitempty"`
+}
+
+type upgradeStateCapsuleFile struct {
+	Mode   uint32 `json:"mode"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
 }
 
 const maxUpgradeConfigBytes = 1 << 20
@@ -157,7 +164,7 @@ func (m *GatewayManager) PreflightUpgradeCompatibility(ctx context.Context, req 
 	defer removeUpgradeProbe(probeRoot)
 	probeConfigPath := filepath.Join(probeHome, ".openclaw", "openclaw.json")
 	probeHash := sha256.New()
-	if err := runOpenClawCommandInHome(ctx, probeRoot, probeHome, probeConfigPath, req, "doctor-fix", []string{"doctor", "--fix", "--yes", "--non-interactive"}, probeHash, 10*time.Minute); err != nil {
+	if err := runOpenClawDoctorRepair(ctx, probeRoot, probeHome, probeConfigPath, req, probeHash); err != nil {
 		if errors.Is(err, errUpgradeProbeBusy) {
 			result.Status = "deferred"
 			result.CheckedAt = time.Now().UTC()
@@ -256,11 +263,25 @@ func (m *GatewayManager) createUpgradeCompatibilityProbe(workspace string, sourc
 		}
 		slash := filepath.ToSlash(rel)
 		root := strings.SplitN(slash, "/", 2)[0]
+		if slash == "openclaw.json" {
+			return nil
+		}
+		if upgradeProbeExcludedRoot(root) {
+			if entry.IsDir() && slash == root {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		isState := root == "state"
 		isControl := isState || root == "cron" || root == "tasks" || root == "automation" || root == "automations"
 		isSupport := root == "extensions" || root == "npm" || root == "plugin-skills"
 		isSession := sessionMigrationDirectory(slash) || sessionMigrationFile(slash)
-		wanted := isControl || isSupport || isSession
+		// Copy every remaining control surface by default.  The previous
+		// hand-maintained allowlist omitted top-level exec-approvals.json, so a
+		// probe could pass and the identical live Doctor command could fail only
+		// after the source gateway had stopped.  Large runtime-only roots are the
+		// explicit exclusions above; unknown future control inputs are included.
+		wanted := isControl || isSupport || isSession || root != "workspace"
 		if entry.IsDir() {
 			if !wanted {
 				return filepath.SkipDir
@@ -286,9 +307,10 @@ func (m *GatewayManager) createUpgradeCompatibilityProbe(workspace string, sourc
 		if err := copyRegularFileStable(path, filepath.Join(probeOpenClaw, rel), 0o600); err != nil {
 			return err
 		}
-		if isControl {
-			stateBytes += info.Size()
-		}
+		// StateBytes is also used for probe capacity planning.  Count every
+		// copied Doctor input, including top-level migration files such as
+		// exec-approvals.json, rather than only the historical allowlist.
+		stateBytes += info.Size()
 		return nil
 	})
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -312,6 +334,15 @@ func (m *GatewayManager) createUpgradeCompatibilityProbe(workspace string, sourc
 	}
 	ok = true
 	return probeRoot, probeHome, stateBytes, nil
+}
+
+func upgradeProbeExcludedRoot(root string) bool {
+	switch strings.ToLower(strings.TrimSpace(root)) {
+	case "workspace", "tmp", "cache", "xdg-state", "browser", "canvas", "media", "sandboxes":
+		return true
+	default:
+		return false
+	}
 }
 
 func remapProbeWorkspacePaths(config map[string]any, probeOpenClaw string) map[string]string {
@@ -402,11 +433,19 @@ func runOpenClawCommandInHome(ctx context.Context, dir, home, configPath string,
 	}
 	cmd := exec.CommandContext(phaseCtx, "openclaw", args...)
 	cmd.Dir = dir
-	cmd.Env = upgradeCommandEnv(map[string]string{
+	overrides := map[string]string{
 		"HOME": home, "OPENCLAW_STATE_DIR": stateDir, "OPENCLAW_CONFIG_PATH": configPath,
 		"TMPDIR": scratchRoot, "XDG_CACHE_HOME": cacheRoot,
 		"XDG_STATE_HOME": xdgStateRoot, "NO_COLOR": "1",
-	})
+	}
+	// OpenClaw 2026.8.1 otherwise asks Doctor to migrate legacy exec
+	// approvals while blocking Doctor itself at the same migration gate.  The
+	// image patch accepts this authority only for an explicit, non-interactive
+	// Doctor repair command; ordinary commands remain fail-closed.
+	if isOpenClawDoctorRepairCommand(args) {
+		overrides["CLAWMANAGER_OPENCLAW_DOCTOR_MIGRATION"] = "1"
+	}
+	cmd.Env = upgradeCommandEnv(overrides)
 	configureGatewayCommand(cmd, req.UID, req.GID)
 	output, runErr := cmd.CombinedOutput()
 	if len(output) > 64*1024 {
@@ -424,6 +463,103 @@ func runOpenClawCommandInHome(ctx context.Context, dir, home, configPath string,
 		return errors.Join(errUpgradeProbeBusy, failure)
 	}
 	return failure
+}
+
+func isOpenClawDoctorRepairCommand(args []string) bool {
+	if len(args) == 0 || args[0] != "doctor" || !containsArgument(args, "--non-interactive") {
+		return false
+	}
+	return containsArgument(args, "--fix") || containsArgument(args, "--repair")
+}
+
+func containsArgument(args []string, wanted string) bool {
+	for _, arg := range args {
+		if arg == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+// runOpenClawDoctorRepair permits bounded convergence because OpenClaw can
+// repair the shared SQLite schema before it can discover the next generation
+// of Doctor-owned state.  A retry is allowed only when durable migration
+// inputs changed; a repeated failure with the same fingerprint fails closed.
+func runOpenClawDoctorRepair(ctx context.Context, dir, home, configPath string, req WorkspaceUpgradeRequest, hash io.Writer) error {
+	const maxPasses = 4
+	before, err := openClawDoctorMigrationFingerprint(home, configPath)
+	if err != nil {
+		return fmt.Errorf("OPENCLAW_UPGRADE_DOCTOR_FINGERPRINT_FAILED: %w", err)
+	}
+	args := []string{"doctor", "--fix", "--yes", "--non-interactive"}
+	for pass := 1; pass <= maxPasses; pass++ {
+		err := runOpenClawCommandInHome(ctx, dir, home, configPath, req, fmt.Sprintf("doctor-fix-pass-%d", pass), args, hash, 10*time.Minute)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, errUpgradeProbeBusy) {
+			return err
+		}
+		after, fingerprintErr := openClawDoctorMigrationFingerprint(home, configPath)
+		if fingerprintErr != nil {
+			return errors.Join(err, fmt.Errorf("OPENCLAW_UPGRADE_DOCTOR_FINGERPRINT_FAILED: %w", fingerprintErr))
+		}
+		if after == before {
+			return errors.Join(err, errors.New("OPENCLAW_UPGRADE_DOCTOR_NO_PROGRESS: Doctor failed without changing any migration input"))
+		}
+		if pass == maxPasses {
+			return errors.Join(err, fmt.Errorf("OPENCLAW_UPGRADE_DOCTOR_DID_NOT_CONVERGE: migration still failed after %d progressing passes", maxPasses))
+		}
+		before = after
+	}
+	return errors.New("OPENCLAW_UPGRADE_DOCTOR_DID_NOT_CONVERGE")
+}
+
+func openClawDoctorMigrationFingerprint(home, configPath string) (string, error) {
+	hash := sha256.New()
+	for _, path := range []string{
+		configPath,
+		filepath.Join(home, ".openclaw", "exec-approvals.json"),
+		filepath.Join(home, ".openclaw", "exec-approvals.json.doctor-importing"),
+		filepath.Join(home, ".openclaw", "identity", "device.json"),
+		filepath.Join(home, ".openclaw", "state", "openclaw.sqlite"),
+	} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			_, _ = io.WriteString(hash, path+"\x00missing\n")
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("Doctor migration input is not a regular file: %s", path)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		_, _ = io.WriteString(hash, path+"\x00"+strconv.FormatInt(info.Size(), 10)+"\x00")
+		if filepath.Base(path) == "openclaw.sqlite" {
+			// Header fields include the schema cookie and user_version without
+			// hashing a potentially large database on every failed pass.
+			header := make([]byte, 100)
+			n, readErr := io.ReadFull(file, header)
+			if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
+				_ = file.Close()
+				return "", readErr
+			}
+			_, _ = hash.Write(header[:n])
+		} else if _, err := io.Copy(hash, file); err != nil {
+			_ = file.Close()
+			return "", err
+		}
+		if err := file.Close(); err != nil {
+			return "", err
+		}
+		_, _ = io.WriteString(hash, "\n")
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func upgradeCommandEnv(overrides map[string]string) []string {
@@ -493,7 +629,7 @@ func (m *GatewayManager) MigrateSessionSQLite(ctx context.Context, req Workspace
 
 	hash := sha256.New()
 	phaseStarted := time.Now()
-	if err := runOpenClawUpgradeCommand(ctx, workspace, home, req, "doctor-fix", []string{"doctor", "--fix", "--yes", "--non-interactive"}, hash); err != nil {
+	if err := runOpenClawDoctorRepair(ctx, workspace, home, filepath.Join(home, ".openclaw", "openclaw.json"), req, hash); err != nil {
 		result.PhaseDurationsMS["doctor_fix"] = time.Since(phaseStarted).Milliseconds()
 		result.Status = "failed_doctor_fix"
 		result.OutputSHA256 = hex.EncodeToString(hash.Sum(nil))
@@ -800,7 +936,7 @@ func safeOpenClawFailureSummary(output []byte) string {
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		lower := strings.ToLower(line)
-		if line == "" || (!strings.Contains(lower, "error") && !strings.Contains(lower, "failed") && !strings.Contains(lower, "reason") && !strings.Contains(lower, "unrecognized key") && !strings.Contains(lower, "invalid config") && !strings.Contains(lower, "config validation failed") && !strings.Contains(lower, "schema migration") && !strings.Contains(lower, "legacy agent database") && !strings.Contains(lower, "database is locked") && !strings.Contains(lower, "sqlite_busy") && !strings.Contains(lower, "transcript_malformed") && !strings.Contains(lower, "transcript_missing")) {
+		if line == "" || (!strings.Contains(lower, "error") && !strings.Contains(lower, "failed") && !strings.Contains(lower, "reason") && !strings.Contains(lower, "unrecognized key") && !strings.Contains(lower, "invalid config") && !strings.Contains(lower, "config validation failed") && !strings.Contains(lower, "schema migration") && !strings.Contains(lower, "migration required") && !strings.Contains(lower, "legacy exec approvals") && !strings.Contains(lower, "legacy agent database") && !strings.Contains(lower, "database is locked") && !strings.Contains(lower, "sqlite_busy") && !strings.Contains(lower, "transcript_malformed") && !strings.Contains(lower, "transcript_missing")) {
 			continue
 		}
 		line = regexp.MustCompile(`/[^ ]+`).ReplaceAllString(line, "<path>")
@@ -963,7 +1099,7 @@ func (m *GatewayManager) prepareOpenClawStateCapsule(workspace string, req Works
 	manifestPath := filepath.Join(dir, "state-capsule.json")
 	if raw, err := os.ReadFile(manifestPath); err == nil {
 		var existing upgradeStateCapsule
-		if json.Unmarshal(raw, &existing) != nil || existing.InstanceID != req.InstanceID || existing.SchemaVersion != 1 {
+		if json.Unmarshal(raw, &existing) != nil || existing.InstanceID != req.InstanceID || (existing.SchemaVersion != 1 && existing.SchemaVersion != 2) {
 			return upgradeStateCapsule{}, errors.New("invalid existing OpenClaw state upgrade capsule")
 		}
 		return existing, nil
@@ -972,24 +1108,67 @@ func (m *GatewayManager) prepareOpenClawStateCapsule(workspace string, req Works
 		return upgradeStateCapsule{}, err
 	}
 	openClawDir := filepath.Join(workspace, "home", ".openclaw")
-	capsule := upgradeStateCapsule{SchemaVersion: 1, InstanceID: req.InstanceID, WorkspaceFiles: map[string]bool{}, ControlDirs: map[string]bool{}}
-	for _, name := range []string{"state", "cron", "tasks", "automation", "automations"} {
-		source := filepath.Join(openClawDir, name)
-		info, statErr := os.Stat(source)
-		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			return upgradeStateCapsule{}, statErr
-		}
-		exists := statErr == nil && info.IsDir()
-		capsule.ControlDirs[name] = exists
-		if name == "state" {
-			capsule.OriginalExists = exists
-		}
-		if !exists {
+	capsule := upgradeStateCapsule{SchemaVersion: 2, InstanceID: req.InstanceID, WorkspaceFiles: map[string]bool{}, ControlDirs: map[string]bool{}, ControlFiles: map[string]upgradeStateCapsuleFile{}}
+	entries, readErr := os.ReadDir(openClawDir)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return upgradeStateCapsule{}, readErr
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "openclaw.json" || upgradeStateCapsuleExcludedRoot(name) {
 			continue
 		}
-		bytes, files, err := copyTreeStable(source, filepath.Join(dir, "control-original", name))
-		if err != nil {
-			return upgradeStateCapsule{}, fmt.Errorf("capture OpenClaw %s capsule: %w", name, err)
+		source := filepath.Join(openClawDir, name)
+		info, statErr := os.Lstat(source)
+		if statErr != nil {
+			return upgradeStateCapsule{}, statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return upgradeStateCapsule{}, fmt.Errorf("state capsule refuses symlink %s", name)
+		}
+		if entry.IsDir() {
+			capsule.ControlDirs[name] = true
+			if name == "state" {
+				capsule.OriginalExists = true
+			}
+			bytes, files, err := copyTreeStable(source, filepath.Join(dir, "control-original", name))
+			if err != nil {
+				return upgradeStateCapsule{}, fmt.Errorf("capture OpenClaw %s capsule: %w", name, err)
+			}
+			capsule.TotalBytes += bytes
+			capsule.FileCount += files
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return upgradeStateCapsule{}, fmt.Errorf("state capsule refuses non-regular file %s", name)
+		}
+		if err := captureUpgradeStateFile(source, name, dir, &capsule); err != nil {
+			return upgradeStateCapsule{}, err
+		}
+	}
+	// Agent-scoped session transcripts use OpenClaw's official session archive,
+	// but Doctor can retire files in each agent's control directory.  Preserve
+	// the control directory without duplicating the potentially large sessions.
+	agentControls, err := filepath.Glob(filepath.Join(openClawDir, "agents", "*", "agent"))
+	if err != nil {
+		return upgradeStateCapsule{}, err
+	}
+	for _, source := range agentControls {
+		info, statErr := os.Lstat(source)
+		if statErr != nil || !info.IsDir() {
+			if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+				return upgradeStateCapsule{}, statErr
+			}
+			continue
+		}
+		rel, relErr := filepath.Rel(openClawDir, source)
+		if relErr != nil || !safeCapsuleRelativePath(rel) {
+			return upgradeStateCapsule{}, ErrWorkspacePath
+		}
+		capsule.ControlDirs[filepath.ToSlash(rel)] = true
+		bytes, files, copyErr := copyTreeStable(source, filepath.Join(dir, "control-original", rel))
+		if copyErr != nil {
+			return upgradeStateCapsule{}, fmt.Errorf("capture OpenClaw %s capsule: %w", rel, copyErr)
 		}
 		capsule.TotalBytes += bytes
 		capsule.FileCount += files
@@ -999,7 +1178,7 @@ func (m *GatewayManager) prepareOpenClawStateCapsule(workspace string, req Works
 	if err := os.MkdirAll(workspaceCapsule, 0o700); err != nil {
 		return upgradeStateCapsule{}, err
 	}
-	for _, name := range []string{"HEARTBEAT.md", "TOOLS.md"} {
+	for _, name := range []string{"HEARTBEAT.md", "TOOLS.md", "openclaw-workspace-state.json", filepath.Join(".openclaw", "workspace-state.json")} {
 		source := filepath.Join(workspaceDir, name)
 		fileInfo, err := os.Lstat(source)
 		if errors.Is(err, os.ErrNotExist) {
@@ -1013,7 +1192,11 @@ func (m *GatewayManager) prepareOpenClawStateCapsule(workspace string, req Works
 			return upgradeStateCapsule{}, fmt.Errorf("OpenClaw workspace migration input %s is not a regular file", name)
 		}
 		capsule.WorkspaceFiles[name] = true
-		if err := copyRegularFileStable(source, filepath.Join(workspaceCapsule, name), fileInfo.Mode().Perm()); err != nil {
+		workspaceTarget := filepath.Join(workspaceCapsule, name)
+		if err := os.MkdirAll(filepath.Dir(workspaceTarget), 0o700); err != nil {
+			return upgradeStateCapsule{}, err
+		}
+		if err := copyRegularFileStable(source, workspaceTarget, fileInfo.Mode().Perm()); err != nil {
 			return upgradeStateCapsule{}, err
 		}
 		capsule.TotalBytes += fileInfo.Size()
@@ -1024,6 +1207,53 @@ func (m *GatewayManager) prepareOpenClawStateCapsule(workspace string, req Works
 		return upgradeStateCapsule{}, err
 	}
 	return capsule, nil
+}
+
+func upgradeStateCapsuleExcludedRoot(root string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(root))
+	if strings.HasPrefix(normalized, "session-sqlite") || strings.HasPrefix(normalized, "sessions.sqlite") {
+		return true
+	}
+	switch normalized {
+	case "workspace", "agents", "tmp", "cache", "xdg-state", "browser", "canvas", "media", "sandboxes", "extensions", "npm", "plugin-skills":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeCapsuleRelativePath(rel string) bool {
+	clean := filepath.Clean(rel)
+	return clean != "." && clean != "" && clean != ".." && !filepath.IsAbs(clean) && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
+}
+
+func captureUpgradeStateFile(source, rel, capsuleDir string, capsule *upgradeStateCapsule) error {
+	if capsule == nil || !safeCapsuleRelativePath(rel) {
+		return ErrWorkspacePath
+	}
+	info, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("state capsule input is not a regular file: %s", rel)
+	}
+	target := filepath.Join(capsuleDir, "control-original", filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return err
+	}
+	if err := copyRegularFileStable(source, target, info.Mode().Perm()); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(raw)
+	capsule.ControlFiles[filepath.ToSlash(rel)] = upgradeStateCapsuleFile{Mode: uint32(info.Mode().Perm()), Size: int64(len(raw)), SHA256: hex.EncodeToString(digest[:])}
+	capsule.TotalBytes += int64(len(raw))
+	capsule.FileCount++
+	return nil
 }
 
 func copyTreeStable(source, target string) (int64, int64, error) {
@@ -1070,13 +1300,47 @@ func (m *GatewayManager) restoreOpenClawStateCapsule(workspace string, req Works
 		return false, err
 	}
 	var capsule upgradeStateCapsule
-	if json.Unmarshal(raw, &capsule) != nil || capsule.InstanceID != req.InstanceID || capsule.SchemaVersion != 1 {
+	if json.Unmarshal(raw, &capsule) != nil || capsule.InstanceID != req.InstanceID || (capsule.SchemaVersion != 1 && capsule.SchemaVersion != 2) {
 		return false, errors.New("invalid OpenClaw state rollback capsule")
 	}
 	openClawDir := filepath.Join(workspace, "home", ".openclaw")
-	for _, name := range []string{"state", "cron", "tasks", "automation", "automations"} {
-		target := filepath.Join(openClawDir, name)
-		failed := filepath.Join(dir, "control-failed-target", name)
+	if capsule.SchemaVersion == 2 {
+		entries, readErr := os.ReadDir(openClawDir)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return false, readErr
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() && !upgradeStateCapsuleExcludedRoot(name) && !capsule.ControlDirs[name] {
+				if err := quarantineUpgradeTarget(filepath.Join(openClawDir, name), filepath.Join(dir, "control-failed-target", name)); err != nil {
+					return false, err
+				}
+			}
+			if !entry.IsDir() && name != "openclaw.json" && !upgradeStateCapsuleExcludedRoot(name) {
+				if _, existed := capsule.ControlFiles[name]; !existed {
+					if err := quarantineUpgradeTarget(filepath.Join(openClawDir, name), filepath.Join(dir, "control-failed-target-files", name)); err != nil {
+						return false, err
+					}
+				}
+			}
+		}
+	}
+	directories := make([]string, 0, len(capsule.ControlDirs))
+	for name, existed := range capsule.ControlDirs {
+		if existed {
+			directories = append(directories, name)
+		}
+	}
+	sort.Slice(directories, func(i, j int) bool {
+		return strings.Count(directories[i], "/") > strings.Count(directories[j], "/")
+	})
+	for _, name := range directories {
+		rel := filepath.FromSlash(name)
+		if !safeCapsuleRelativePath(rel) {
+			return false, errors.New("invalid OpenClaw state rollback path")
+		}
+		target := filepath.Join(openClawDir, rel)
+		failed := filepath.Join(dir, "control-failed-target", rel)
 		if _, err := os.Stat(failed); errors.Is(err, os.ErrNotExist) {
 			if _, currentErr := os.Stat(target); currentErr == nil {
 				if err := os.MkdirAll(filepath.Dir(failed), 0o700); err != nil {
@@ -1089,23 +1353,64 @@ func (m *GatewayManager) restoreOpenClawStateCapsule(workspace string, req Works
 				return false, currentErr
 			}
 		}
-		if capsule.ControlDirs[name] {
-			original := filepath.Join(dir, "control-original", name)
-			if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
-				if err := os.Rename(original, target); err != nil {
-					return false, fmt.Errorf("restore original OpenClaw %s: %w", name, err)
-				}
-			} else if err != nil {
-				return false, err
+		original := filepath.Join(dir, "control-original", rel)
+		if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
+			if err := os.Rename(original, target); err != nil {
+				return false, fmt.Errorf("restore original OpenClaw %s: %w", name, err)
 			}
-			if err := chownTree(target, req.UID, req.GID); err != nil {
-				return false, err
-			}
+		} else if err != nil {
+			return false, err
+		}
+		if err := chownTree(target, req.UID, req.GID); err != nil {
+			return false, err
+		}
+	}
+	files := make([]string, 0, len(capsule.ControlFiles))
+	for rel := range capsule.ControlFiles {
+		files = append(files, rel)
+	}
+	sort.Strings(files)
+	for _, slash := range files {
+		rel := filepath.FromSlash(slash)
+		if !safeCapsuleRelativePath(rel) {
+			return false, errors.New("invalid OpenClaw state rollback file")
+		}
+		meta := capsule.ControlFiles[slash]
+		target := filepath.Join(openClawDir, rel)
+		failed := filepath.Join(dir, "control-failed-target-files", rel)
+		if err := quarantineUpgradeTarget(target, failed); err != nil {
+			return false, err
+		}
+		original := filepath.Join(dir, "control-original", rel)
+		data, readErr := os.ReadFile(original)
+		if readErr != nil {
+			return false, readErr
+		}
+		digest := sha256.Sum256(data)
+		if int64(len(data)) != meta.Size || hex.EncodeToString(digest[:]) != meta.SHA256 {
+			return false, fmt.Errorf("OpenClaw rollback capsule checksum mismatch: %s", slash)
+		}
+		mode := os.FileMode(meta.Mode)
+		if mode == 0 {
+			mode = 0o600
+		}
+		if err := atomicWriteFile(target, data, mode); err != nil {
+			return false, err
+		}
+		if err := ChownWorkspace(target, req.UID, req.GID); err != nil {
+			return false, err
 		}
 	}
 	workspaceDir := filepath.Join(workspace, "home", ".openclaw", "workspace")
 	failedWorkspace := filepath.Join(dir, "workspace-failed-target")
-	for _, name := range []string{"HEARTBEAT.md", "TOOLS.md"} {
+	workspaceFiles := []string{"HEARTBEAT.md", "TOOLS.md"}
+	// Schema v1 capsules predate the workspace-state inputs.  Treating an
+	// absent v1 manifest entry as "did not exist" would incorrectly quarantine
+	// a user's pre-existing file during a rollback of an older rollout.
+	if capsule.SchemaVersion >= 2 {
+		workspaceFiles = append(workspaceFiles, "openclaw-workspace-state.json", filepath.Join(".openclaw", "workspace-state.json"))
+	}
+	for _, name := range workspaceFiles {
 		target := filepath.Join(workspaceDir, name)
 		if capsule.WorkspaceFiles[name] {
 			source := filepath.Join(dir, "workspace-original", name)
@@ -1137,6 +1442,26 @@ func (m *GatewayManager) restoreOpenClawStateCapsule(workspace string, req Works
 		}
 	}
 	return true, nil
+}
+
+func quarantineUpgradeTarget(target, failed string) error {
+	if _, err := os.Stat(failed); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(failed), 0o700); err != nil {
+		return err
+	}
+	if err := os.Rename(target, failed); err != nil {
+		return fmt.Errorf("quarantine failed OpenClaw target %s: %w", target, err)
+	}
+	return nil
 }
 
 func sessionMigrationArchiveStats(home string) (int64, int64, error) {
