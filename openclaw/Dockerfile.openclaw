@@ -60,6 +60,12 @@ COPY --from=node-runtime /usr/local /usr/local
 
 RUN npm install -g openclaw@2026.8.1
 
+COPY openclaw/patches/patch_exec_approvals_doctor_migration.mjs /usr/local/share/openclaw/patches/patch_exec_approvals_doctor_migration.mjs
+COPY openclaw/patches/test_exec_approvals_doctor_migration.mjs /usr/local/share/openclaw/patches/test_exec_approvals_doctor_migration.mjs
+RUN node /usr/local/share/openclaw/patches/patch_exec_approvals_doctor_migration.mjs --patch \
+  && node /usr/local/share/openclaw/patches/patch_exec_approvals_doctor_migration.mjs --verify \
+  && node /usr/local/share/openclaw/patches/test_exec_approvals_doctor_migration.mjs
+
 COPY openclaw/patches/patch_memory_core_startup_migration.mjs /usr/local/share/openclaw/patches/patch_memory_core_startup_migration.mjs
 COPY openclaw/patches/test_memory_core_startup_migration.mjs /usr/local/share/openclaw/patches/test_memory_core_startup_migration.mjs
 RUN node /usr/local/share/openclaw/patches/patch_memory_core_startup_migration.mjs --patch \

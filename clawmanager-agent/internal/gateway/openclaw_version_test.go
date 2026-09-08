@@ -28,7 +28,7 @@ func TestOpenClawUpgradeCapabilitiesUseCapsuleNotWorkspaceSnapshot(t *testing.T)
 			}
 		}
 	}
-	for _, required := range []string{"openclaw.session-sqlite-migrate-v1", "openclaw.session-sqlite-restore-v1", "openclaw.session-sqlite-preserve-v1", "openclaw.session-continuity-v1", "openclaw.runtime-standby-v1", "openclaw.upgrade-capsule-v2", "openclaw.upgrade-preflight-v3"} {
+	for _, required := range []string{"openclaw.session-sqlite-migrate-v1", "openclaw.session-sqlite-restore-v1", "openclaw.session-sqlite-preserve-v1", "openclaw.session-continuity-v1", "openclaw.runtime-standby-v1", "openclaw.upgrade-capsule-v3", "openclaw.upgrade-preflight-v4"} {
 		found := false
 		for _, capability := range capabilities {
 			found = found || capability == required
