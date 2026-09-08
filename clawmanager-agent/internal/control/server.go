@@ -4,17 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/iamlovingit/clawmanager-agent/internal/gateway"
 )
 
 const ControlTokenHeader = gateway.ControlTokenHeader
 
+const openClawUpgradeOperationTimeout = 15 * time.Minute
+
 func NewControlHandler(cfg gateway.Config, manager *gateway.GatewayManager, reporter gateway.HeartbeatReporter) http.Handler {
 	mux := http.NewServeMux()
+
+	// Kubernetes probes must not carry the control token. This endpoint only
+	// exposes traffic readiness; all management operations remain authenticated.
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := manager.Health(); err != nil || !manager.ReadyForTraffic() {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		if !authorizeControl(cfg, w, r) {
@@ -29,7 +48,9 @@ func NewControlHandler(cfg gateway.Config, manager *gateway.GatewayManager, repo
 			return
 		}
 		status := "ready"
-		if manager.Draining() {
+		if manager.UpgradeStandby() {
+			status = "standby"
+		} else if manager.Draining() {
 			status = "draining"
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": status})
@@ -60,21 +81,246 @@ func NewControlHandler(cfg gateway.Config, manager *gateway.GatewayManager, repo
 		if !authorizeControl(cfg, w, r) {
 			return
 		}
-		if r.Method != http.MethodDelete {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
 		escapedID := strings.TrimPrefix(r.URL.Path, "/v1/gateways/")
+		stopRequested := strings.HasSuffix(escapedID, "/stop")
+		if stopRequested {
+			escapedID = strings.TrimSuffix(escapedID, "/stop")
+		}
 		gatewayID, err := url.PathUnescape(escapedID)
 		if err != nil {
 			http.Error(w, "invalid gateway id", http.StatusBadRequest)
 			return
 		}
-		if err := manager.DeleteGateway(r.Context(), gatewayID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		switch {
+		case r.Method == http.MethodGet && !stopRequested:
+			state, ok := manager.GatewayState(gatewayID)
+			if !ok {
+				http.Error(w, "gateway not found", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, http.StatusOK, state)
+		case r.Method == http.MethodDelete || (r.Method == http.MethodPost && stopRequested):
+			if err := manager.StopGatewayConfirmed(r.Context(), gatewayID); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"gateway_id": gatewayID, "stopped": true, "confirmed": true})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/v1/openclaw/preflight", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeControl(cfg, w, r) {
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req gateway.WorkspaceUpgradeRequest
+		if err := decodeRequiredJSON(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		result, err := manager.PreflightWorkspace(r.Context(), req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("/v1/openclaw/session-sqlite/migrate", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeControl(cfg, w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req gateway.WorkspaceUpgradeRequest
+		if err := decodeRequiredJSON(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		operationCtx, cancel := context.WithTimeout(r.Context(), openClawUpgradeOperationTimeout)
+		defer cancel()
+		result, err := manager.MigrateSessionSQLite(operationCtx, req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("/v1/openclaw/session-sqlite/migrate/status", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeControl(cfg, w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req gateway.WorkspaceUpgradeRequest
+		if err := decodeRequiredJSON(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		result, err := manager.SessionSQLiteMigrationStatus(req)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.Error(w, "session migration receipt not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("/v1/openclaw/upgrade/preflight", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeControl(cfg, w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req gateway.WorkspaceUpgradeRequest
+		if err := decodeRequiredJSON(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		operationCtx, cancel := context.WithTimeout(r.Context(), openClawUpgradeOperationTimeout)
+		defer cancel()
+		result, err := manager.PreflightUpgradeCompatibility(operationCtx, req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("/v1/openclaw/session-sqlite/restore", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeControl(cfg, w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req gateway.WorkspaceUpgradeRequest
+		if err := decodeRequiredJSON(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		operationCtx, cancel := context.WithTimeout(r.Context(), openClawUpgradeOperationTimeout)
+		defer cancel()
+		result, err := manager.RestoreSessionSQLite(operationCtx, req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("/v1/openclaw/session-sqlite/restore/status", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeControl(cfg, w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req gateway.WorkspaceUpgradeRequest
+		if err := decodeRequiredJSON(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		result, err := manager.SessionSQLiteRestoreStatus(req)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.Error(w, "session restore receipt not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	mux.HandleFunc("/v1/openclaw/upgrade/activate", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeControl(cfg, w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			RolloutID string `json:"rollout_id"`
+		}
+		if err := decodeRequiredJSON(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := manager.ActivateUpgrade(req.RolloutID); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if reporter != nil {
+			_ = reporter.ReportHeartbeat(context.Background(), manager.HeartbeatPayload(0))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"activated": true, "rollout_id": req.RolloutID})
+	})
+
+	mux.HandleFunc("/v1/openclaw/writer-leases/", func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeControl(cfg, w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		action := strings.TrimPrefix(r.URL.Path, "/v1/openclaw/writer-leases/")
+		var body struct {
+			gateway.WorkspaceUpgradeRequest
+			Token      string `json:"token"`
+			TTLSeconds int    `json:"ttl_seconds"`
+		}
+		if err := decodeRequiredJSON(r, &body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.LeaseToken == "" {
+			body.LeaseToken = body.Token
+		}
+		ttl := time.Duration(body.TTLSeconds) * time.Second
+		switch action {
+		case "acquire":
+			lease, err := manager.AcquireWriterLease(body.WorkspaceUpgradeRequest, body.LeaseToken, ttl)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			writeJSON(w, http.StatusCreated, lease)
+		case "renew":
+			lease, err := manager.RenewWriterLease(body.WorkspaceUpgradeRequest, ttl)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			writeJSON(w, http.StatusOK, lease)
+		case "release":
+			if err := manager.ReleaseWriterLease(body.WorkspaceUpgradeRequest); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"released": true})
+		default:
+			http.Error(w, "unknown writer lease action", http.StatusNotFound)
+		}
 	})
 
 	mux.HandleFunc("/v1/drain", func(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +413,7 @@ func writeCreateGatewayError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, gateway.ErrRuntimeType), errors.Is(err, gateway.ErrWorkspacePath):
 		http.Error(w, err.Error(), http.StatusBadRequest)
-	case errors.Is(err, gateway.ErrDraining), errors.Is(err, gateway.ErrNoFreePort), errors.Is(err, gateway.ErrStaleGeneration):
+	case errors.Is(err, gateway.ErrDraining), errors.Is(err, gateway.ErrUpgradeStandby), errors.Is(err, gateway.ErrNoFreePort), errors.Is(err, gateway.ErrStaleGeneration), errors.Is(err, gateway.ErrActiveGeneration), errors.Is(err, gateway.ErrWriterLeaseActive):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, gateway.ErrGatewayStartFailed):
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -180,4 +426,13 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+func decodeRequiredJSON(r *http.Request, target any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("invalid json: %w", err)
+	}
+	return nil
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/iamlovingit/clawmanager-agent/internal/gateway"
 	"github.com/iamlovingit/clawmanager-agent/internal/llmconfig"
+	"github.com/iamlovingit/clawmanager-agent/internal/openclawcompat"
 	"github.com/iamlovingit/clawmanager-agent/internal/scheduledtasks"
 )
 
@@ -41,15 +42,22 @@ var openClawDefaultDeniedNodeCommands = []string{
 	"sms.send",
 }
 
+var openClawTrustedProxyDeviceScopes = []string{
+	"operator.read",
+	"operator.write",
+	"operator.approvals",
+	"operator.questions",
+}
+
 var openClawDefaultDisabledPlugins = []string{
 	"bonjour",
-	"acpx",
-	"phone-control",
 	"talk-voice",
 	"device-pair",
 	"dingtalk-connector",
 	"wecom-openclaw-plugin",
 	"redis-team",
+	"a2a",
+	"workboard",
 }
 
 var openClawEnvManagedChannelPlugins = map[string][]string{
@@ -97,14 +105,15 @@ func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, wo
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read openclaw config: %w", err)
 	}
+	openClawVersion := resolveOpenClawVersion(cfg, req)
 	configureManagedOpenClawBrowser(config, req, port)
-	mergeOpenClawLiteDefaults(config)
+	mergeOpenClawLiteDefaults(config, openClawVersion)
 	reconcileOpenClawBrowserPlugin(config)
 	if err := mergeOpenClawChannelsFromRequest(config, req); err != nil {
 		return err
 	}
 
-	mergePlatformDefaults(config, port)
+	mergePlatformDefaults(config, port, openClawVersion)
 	agentDefaults := ensureObject(ensureObject(config, "agents"), "defaults")
 	agentDefaults["workspace"] = filepath.ToSlash(instancePaths.OpenClawWorkspace)
 	if teamEnabledFromRequest(req) {
@@ -137,11 +146,30 @@ func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, wo
 		trustedProxy["userHeader"] = openClawTrustedProxyUserHeader
 		trustedProxy["requiredHeaders"] = []string{openClawTrustedProxyRequiredHeader}
 		trustedProxy["allowUsers"] = []string{basePath}
+		if gateway.IsOpenClawAtLeast(openClawVersion, gateway.OpenClaw81Version) {
+			// OpenClaw 8.1 retired dangerouslyDisableDeviceAuth. Enroll only
+			// browser devices that have already passed ClawManager's
+			// instance-scoped trusted-proxy authentication, and keep the
+			// persistent device grant below operator.admin. Full Control UI
+			// access is granted dynamically to this exact proxy identity, as
+			// recommended by the 8.1 trusted-proxy contract.
+			trustedProxy["deviceAutoApprove"] = map[string]any{
+				"enabled": true,
+				"scopes":  append([]string(nil), openClawTrustedProxyDeviceScopes...),
+			}
+			identityScopes := ensureObject(auth, "identityScopes")
+			identityScopes[basePath] = []string{"operator.admin"}
+		} else {
+			delete(trustedProxy, "deviceAutoApprove")
+			delete(auth, "identityScopes")
+		}
 	}
 
 	controlUI := ensureObject(gatewayConfig, "controlUi")
 	controlUI["basePath"] = basePath
-	if cfg.GatewayAuthMode == "trusted-proxy" {
+	if gateway.IsOpenClawAtLeast(openClawVersion, gateway.OpenClaw81Version) {
+		delete(controlUI, "dangerouslyDisableDeviceAuth")
+	} else if cfg.GatewayAuthMode == "trusted-proxy" {
 		controlUI["dangerouslyDisableDeviceAuth"] = true
 	}
 	origins := cfg.AllowedOrigins
@@ -155,6 +183,9 @@ func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, wo
 		gatewayConfig["trustedProxies"] = appendUniqueStringArray(gatewayConfig["trustedProxies"], cfg.TrustedProxies...)
 	}
 	mergeOpenClawLLMConfig(config, cfg)
+	if gateway.IsOpenClawAtLeast(openClawVersion, gateway.OpenClaw81Version) {
+		openclawcompat.Normalize81(config)
+	}
 
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
@@ -178,6 +209,12 @@ func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, wo
 		}
 	}
 	openclawHome := filepath.Join(workspacePath, "home", ".openclaw")
+	if gateway.IsOpenClawAtLeast(openClawVersion, gateway.OpenClaw81Version) {
+		// OpenClaw 8.1 owns its SQLite-backed Automation store through the
+		// Gateway. The manager reconciles declarations after readiness; writing
+		// cron/jobs.json here would race the upstream migration and duplicate jobs.
+		return nil
+	}
 	result := scheduledtasks.ApplyOpenClawFromEnv(openclawHome, func(key string) string {
 		if req.Environment != nil {
 			if value, ok := req.Environment[key]; ok {
@@ -326,7 +363,7 @@ func setDefaultObjectValue(object map[string]any, key string, value any) {
 // Values are only filled when absent so recreating an existing Lite instance
 // does not discard explicit user choices. Environment-managed model, channel,
 // Team, gateway port, and authentication settings are applied afterwards.
-func mergeOpenClawLiteDefaults(config map[string]any) {
+func mergeOpenClawLiteDefaults(config map[string]any, openClawVersion string) {
 	models := ensureObject(config, "models")
 	setDefaultObjectValue(models, "mode", "merge")
 
@@ -351,6 +388,10 @@ func mergeOpenClawLiteDefaults(config map[string]any) {
 
 	tools := ensureObject(config, "tools")
 	setDefaultObjectValue(tools, "profile", "full")
+	if gateway.IsOpenClawAtLeast(openClawVersion, gateway.OpenClaw81Version) {
+		swarm := ensureObject(tools, "swarm")
+		swarm["enabled"] = false
+	}
 
 	commands := ensureObject(config, "commands")
 	setDefaultObjectValue(commands, "native", "auto")
@@ -368,7 +409,16 @@ func mergeOpenClawLiteDefaults(config map[string]any) {
 	setDefaultObjectValue(tailscale, "mode", "off")
 	setDefaultObjectValue(tailscale, "resetOnExit", false)
 	nodes := ensureObject(gatewayConfig, "nodes")
-	nodes["denyCommands"] = appendUniqueStringArray(nodes["denyCommands"], openClawDefaultDeniedNodeCommands...)
+	if gateway.IsOpenClawAtLeast(openClawVersion, gateway.OpenClaw81Version) {
+		commands := ensureObject(nodes, "commands")
+		legacyDenied := appendUniqueStringArray(nodes["denyCommands"])
+		commands["deny"] = appendUniqueStringArray(commands["deny"], append(legacyDenied, openClawDefaultDeniedNodeCommands...)...)
+		delete(nodes, "denyCommands")
+		delete(config, "cloudWorkers")
+		delete(gatewayConfig, "roles")
+	} else {
+		nodes["denyCommands"] = appendUniqueStringArray(nodes["denyCommands"], openClawDefaultDeniedNodeCommands...)
+	}
 
 	entries := ensureObject(ensureObject(config, "plugins"), "entries")
 	for _, pluginID := range openClawDefaultDisabledPlugins {
@@ -380,6 +430,10 @@ func mergeOpenClawLiteDefaults(config map[string]any) {
 	setDefaultObjectValue(dreaming, "enabled", true)
 	setDefaultObjectValue(dreaming, "frequency", "0 3 * * *")
 	setDefaultObjectValue(dreaming, "timezone", "Asia/Shanghai")
+
+	if gateway.IsOpenClawAtLeast(openClawVersion, gateway.OpenClaw81Version) {
+		openclawcompat.Normalize81(config)
+	}
 }
 
 func mergeOpenClawChannelsFromRequest(config map[string]any, req gateway.CreateGatewayRequest) error {
@@ -443,17 +497,22 @@ func reconcileOpenClawChannelPlugins(config map[string]any, channelsPayload map[
 	}
 }
 
-func mergePlatformDefaults(config map[string]any, port int) {
+func mergePlatformDefaults(config map[string]any, port int, openClawVersion string) {
 	gatewayConfig := ensureObject(config, "gateway")
 	gatewayConfig["port"] = port
 
 	cron := ensureObject(config, "cron")
 	cron["enabled"] = true
-	cron["maxConcurrentRuns"] = 2
-	runLog := ensureObject(cron, "runLog")
-	runLog["keepLines"] = 2000
-	runLog["maxBytes"] = "2mb"
 	cron["sessionRetention"] = "24h"
+	if gateway.IsOpenClawAtLeast(openClawVersion, gateway.OpenClaw81Version) {
+		delete(cron, "maxConcurrentRuns")
+		delete(cron, "runLog")
+	} else {
+		cron["maxConcurrentRuns"] = 2
+		runLog := ensureObject(cron, "runLog")
+		runLog["keepLines"] = 2000
+		runLog["maxBytes"] = "2mb"
+	}
 
 	update := ensureObject(config, "update")
 	update["checkOnStart"] = false
@@ -842,6 +901,16 @@ func configWithRequestLLMEnv(cfg gateway.Config, req gateway.CreateGatewayReques
 
 func requestEnvValue(req gateway.CreateGatewayRequest, keys ...string) (string, bool) {
 	return gateway.RequestEnvValue(req, keys...)
+}
+
+func resolveOpenClawVersion(cfg gateway.Config, req gateway.CreateGatewayRequest) string {
+	if version := strings.TrimSpace(cfg.OpenClawVersion); version != "" {
+		return version
+	}
+	if version, ok := requestEnvValue(req, "CLAWMANAGER_OPENCLAW_VERSION"); ok {
+		return strings.TrimSpace(version)
+	}
+	return strings.TrimSpace(os.Getenv("CLAWMANAGER_OPENCLAW_VERSION"))
 }
 
 func mergeOpenClawLLMConfig(config map[string]any, cfg gateway.Config) {

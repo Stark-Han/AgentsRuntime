@@ -35,6 +35,66 @@ func TestControlHandlerRequiresControlToken(t *testing.T) {
 	}
 }
 
+func TestUpgradeStandbyReadinessAndActivation(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.UpgradeID = "81"
+	mgr := NewGatewayManager(cfg, &fakeStarter{nextPID: 4242}, NewPortAllocator(func(int) bool { return false }))
+	srv := httptest.NewServer(NewControlHandler(cfg, mgr, &fakeReporter{}))
+	defer srv.Close()
+
+	before, err := http.Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = before.Body.Close()
+	if before.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("standby readiness = %d, want 503", before.StatusCode)
+	}
+	body := bytes.NewBufferString(`{"rollout_id":"81"}`)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/openclaw/upgrade/activate", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(ControlTokenHeader, cfg.ControlToken)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("activate status = %d, want 200", response.StatusCode)
+	}
+	after, err := http.Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = after.Body.Close()
+	if after.StatusCode != http.StatusOK {
+		t.Fatalf("activated readiness = %d, want 200", after.StatusCode)
+	}
+}
+
+func TestFullWorkspaceSnapshotEndpointIsDisabled(t *testing.T) {
+	cfg := testConfig(t)
+	mgr := NewGatewayManager(cfg, &fakeStarter{nextPID: 4242}, NewPortAllocator(func(int) bool { return false }))
+	srv := httptest.NewServer(NewControlHandler(cfg, mgr, &fakeReporter{}))
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/openclaw/snapshots", bytes.NewBufferString(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(ControlTokenHeader, cfg.ControlToken)
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("snapshot endpoint status = %d, want 404", response.StatusCode)
+	}
+}
+
 func TestControlHandlerCreatesIdempotentGatewayAndRejectsNoFreePort(t *testing.T) {
 	cfg := testConfig(t)
 	starter := &fakeStarter{nextPID: 4242}

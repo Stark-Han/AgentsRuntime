@@ -78,6 +78,8 @@ func LoadConfigFromEnv() (Config, error) {
 
 	cfg := Config{
 		RuntimeType:           runtimeType,
+		OpenClawVersion:       strings.TrimSpace(os.Getenv("CLAWMANAGER_OPENCLAW_VERSION")),
+		UpgradeID:             strings.TrimSpace(os.Getenv("CLAWMANAGER_RUNTIME_UPGRADE_ID")),
 		Runtime:               profile,
 		WorkspaceRoot:         cleanPath(envOrDefault("RUNTIME_WORKSPACE_ROOT", defaults.WorkspaceRoot)),
 		ControlToken:          strings.TrimSpace(os.Getenv("RUNTIME_AGENT_CONTROL_TOKEN")),
@@ -153,6 +155,9 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 	if cfg.HeartbeatInterval, err = durationEnv("RUNTIME_AGENT_HEARTBEAT_INTERVAL", cfg.HeartbeatInterval); err != nil {
 		return Config{}, err
+	}
+	if cfg.HeartbeatInterval <= 0 {
+		return Config{}, errors.New("RUNTIME_AGENT_HEARTBEAT_INTERVAL must be positive")
 	}
 	if cfg.MetricsInterval, err = durationEnv("RUNTIME_AGENT_METRICS_INTERVAL", cfg.MetricsInterval); err != nil {
 		return Config{}, err

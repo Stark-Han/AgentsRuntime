@@ -20,7 +20,7 @@ const (
 )
 
 type PayloadEnvelope struct {
-	SchemaVersion int          `json:"schemaVersion"`
+	SchemaVersion int           `json:"schemaVersion"`
 	Items         []PayloadItem `json:"items"`
 }
 
@@ -47,21 +47,21 @@ type CronStoreFile struct {
 }
 
 type CronJob struct {
-	ID            string          `json:"id"`
-	AgentID       string          `json:"agentId,omitempty"`
-	SessionKey    string          `json:"sessionKey,omitempty"`
-	Name          string          `json:"name"`
-	Description   string          `json:"description,omitempty"`
-	Enabled       bool            `json:"enabled"`
-	DeleteAfterRun bool           `json:"deleteAfterRun,omitempty"`
-	CreatedAtMs   int64           `json:"createdAtMs"`
-	UpdatedAtMs   int64           `json:"updatedAtMs"`
-	Schedule      json.RawMessage `json:"schedule"`
-	SessionTarget string          `json:"sessionTarget"`
-	WakeMode      string          `json:"wakeMode"`
-	Payload       json.RawMessage `json:"payload"`
-	Delivery      json.RawMessage `json:"delivery,omitempty"`
-	State         map[string]any  `json:"state"`
+	ID             string          `json:"id"`
+	AgentID        string          `json:"agentId,omitempty"`
+	SessionKey     string          `json:"sessionKey,omitempty"`
+	Name           string          `json:"name"`
+	Description    string          `json:"description,omitempty"`
+	Enabled        bool            `json:"enabled"`
+	DeleteAfterRun bool            `json:"deleteAfterRun,omitempty"`
+	CreatedAtMs    int64           `json:"createdAtMs"`
+	UpdatedAtMs    int64           `json:"updatedAtMs"`
+	Schedule       json.RawMessage `json:"schedule"`
+	SessionTarget  string          `json:"sessionTarget"`
+	WakeMode       string          `json:"wakeMode"`
+	Payload        json.RawMessage `json:"payload"`
+	Delivery       json.RawMessage `json:"delivery,omitempty"`
+	State          map[string]any  `json:"state"`
 }
 
 type ApplyResult struct {
@@ -170,7 +170,7 @@ func openClawManagedSetMatches(existingJobs, managed []CronJob, payloadHash stri
 	return true
 }
 
-func jobsFromPayload(raw string) ([]CronJob, error) {
+func JobsFromPayload(raw string) ([]CronJob, error) {
 	var payload PayloadEnvelope
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return nil, fmt.Errorf("parse scheduled tasks payload: %w", err)
@@ -226,6 +226,8 @@ func jobsFromPayload(raw string) ([]CronJob, error) {
 	}
 	return jobs, nil
 }
+
+func jobsFromPayload(raw string) ([]CronJob, error) { return JobsFromPayload(raw) }
 
 func upsertManagedJobs(storePath string, existing CronStoreFile, managed []CronJob, payloadHash string, uid, gid int) error {
 	if err := os.MkdirAll(filepath.Dir(storePath), 0o750); err != nil {

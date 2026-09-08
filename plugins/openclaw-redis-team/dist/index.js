@@ -5,10 +5,106 @@ import net from "node:net";
 import path from "node:path";
 import tls from "node:tls";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/direct-dm";
 
 const PLUGIN_ID = "redis-team";
 const CHANNEL_ID = "redis-team";
+
+// OpenClaw 8.1 Group Channel adapter. Team traffic enters the generic inbound
+// turn kernel with a real group route and never passes through the Direct-DM
+// compatibility helper.
+async function dispatchInboundRedisTeamGroupWithRuntime(params) {
+  const runtime = params.runtime?.channel;
+  if (!runtime?.routing?.resolveAgentRoute || !runtime?.inbound?.buildContext || !runtime?.inbound?.run) {
+    throw new Error("OpenClaw 8.1 Group Channel runtime is unavailable");
+  }
+  const groupId = trim(params.peer?.id);
+  if (!groupId) throw new Error("Redis Team Group id is required");
+  const route = runtime.routing.resolveAgentRoute({
+    cfg: params.cfg,
+    channel: params.channel,
+    accountId: params.accountId,
+    peer: { kind: "group", id: groupId },
+    teamId: groupId,
+    groupScope: "channel",
+  });
+  const ctxPayload = await runtime.inbound.buildContext({
+    channel: params.channel,
+    accountId: route.accountId || params.accountId,
+    provider: params.provider || params.channel,
+    surface: params.surface || params.channel,
+    messageId: params.messageId,
+    messageIdFull: params.messageId,
+    timestamp: params.timestamp,
+    from: params.senderAddress,
+    sender: { id: params.senderId, name: params.conversationLabel },
+    conversation: {
+      kind: "group",
+      id: groupId,
+      routePeer: { kind: "group", id: groupId },
+      label: params.conversationLabel,
+    },
+    route: {
+      agentId: route.agentId,
+      accountId: route.accountId,
+      routeSessionKey: route.sessionKey,
+      dispatchSessionKey: route.sessionKey,
+    },
+    reply: {
+      to: params.recipientAddress,
+      originatingTo: params.originatingTo || params.senderAddress,
+    },
+    message: {
+      body: params.rawBody,
+      bodyForAgent: params.bodyForAgent || params.rawBody,
+      rawBody: params.rawBody,
+      commandBody: params.commandBody || params.rawBody,
+    },
+    access: { commands: { authorized: false } },
+    channelIngress: "unsupported",
+    extra: {
+      // Callers may add task-scoped facts, but they must never be able to
+      // replace the host-authenticated Team identity used by the 8.1 tool
+      // factory. Keep the authoritative channel fields last.
+      ...params.extraContext,
+      NativeChannelId: groupId,
+      OriginatingChannel: params.originatingChannel || params.channel,
+    },
+  });
+  const plan = {
+    cfg: params.cfg,
+    channel: params.channel,
+    accountId: route.accountId || params.accountId,
+    route: { agentId: route.agentId, sessionKey: route.sessionKey },
+    ctxPayload,
+    record: { onRecordError: params.onRecordError },
+    dispatchReplyFromConfig: runtime.reply?.dispatchReplyFromConfig,
+    delivery: {
+      deliverWithProviderMessageSending: async (payload) => {
+        await params.deliver(payload);
+        return { visibleReplySent: true, delivered: true };
+      },
+      onError: (err, info) => params.onDispatchError?.(err, info || { kind: "final" }),
+    },
+    replyPipeline: {},
+  };
+  const result = await runtime.inbound.run({
+    channel: params.channel,
+    accountId: route.accountId || params.accountId,
+    raw: ctxPayload,
+    adapter: {
+      ingest: () => ({
+        id: params.messageId,
+        timestamp: params.timestamp,
+        rawText: params.rawBody,
+        textForAgent: params.bodyForAgent || params.rawBody,
+        textForCommands: params.commandBody || params.rawBody,
+        raw: ctxPayload,
+      }),
+      resolveTurn: () => plan,
+    },
+  });
+  return { route, ctxPayload, result };
+}
 const DEFAULT_SHARED_DIR = "/team";
 const DEFAULT_GROUP = "team-members";
 const DEFAULT_EMBEDDED_TIMEOUT_SECONDS = 1800;
@@ -29,6 +125,8 @@ const RUNTIME_CAPABILITIES = Object.freeze([
   "team_artifact_preview_v2",
   "review_contract_v1",
   "validation_contract_v2",
+  "group_hooks_v1",
+  "maintenance_drain_v1",
 ]);
 const COMPLETION_SOURCE = "team_complete_task";
 const TEAM_SHARED_DIR_MODE = 0o2775;
@@ -597,10 +695,8 @@ async function ensureDirs(cfg) {
 async function writeJson(file, value, fileMode = 0o664, dirMode = TEAM_SHARED_DIR_MODE) {
   await mkdirBestEffort(path.dirname(file), dirMode, "JSON parent");
   const tmp = file + "." + process.pid + "." + Date.now() + "." + randomUUID() + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
-  await fs.chmod(tmp, fileMode);
+  await fs.writeFile(tmp, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode: fileMode });
   await fs.rename(tmp, file);
-  await fs.chmod(file, fileMode);
 }
 function analyzeResponseLocale(locale, text) {
   const normalizedLocale = trim(locale).toLowerCase();
@@ -638,10 +734,8 @@ async function writeJsonBestEffort(file, value, label, fileMode = 0o664, dirMode
 async function writeText(file, value) {
   await mkdirBestEffort(path.dirname(file), TEAM_SHARED_DIR_MODE, "shared text parent");
   const tmp = file + "." + process.pid + "." + Date.now() + "." + randomUUID() + ".tmp";
-  await fs.writeFile(tmp, value, "utf8");
-  await fs.chmod(tmp, 0o664);
+  await fs.writeFile(tmp, value, { encoding: "utf8", mode: 0o664 });
   await fs.rename(tmp, file);
-  await fs.chmod(file, 0o664);
 }
 
 function normalizedArtifactRelativePath(value) {
@@ -2900,78 +2994,6 @@ function summarizeCompletionText(text, fallback = "Redis Team task completed") {
   return (firstLine || fallback).slice(0, 160);
 }
 
-async function readTextTail(file, maxBytes = 512 * 1024) {
-  try {
-    const stat = await fs.stat(file);
-    if (!stat.isFile()) return "";
-    if (stat.size <= maxBytes) return await fs.readFile(file, "utf8");
-    const handle = await fs.open(file, "r");
-    try {
-      const buffer = Buffer.alloc(maxBytes);
-      await handle.read(buffer, 0, maxBytes, stat.size - maxBytes);
-      return buffer.toString("utf8");
-    } finally {
-      await handle.close();
-    }
-  } catch {
-    return "";
-  }
-}
-
-function resolveSessionFile(baseDir, raw) {
-  const value = trim(raw);
-  if (!value) return "";
-  return path.isAbsolute(value) ? value : path.resolve(baseDir, value);
-}
-
-function sessionRecordFromIndex(index, sessionKey) {
-  if (!index || typeof index !== "object") return null;
-  if (sessionKey && index[sessionKey] && typeof index[sessionKey] === "object") return index[sessionKey];
-  const sessions = Array.isArray(index.sessions)
-    ? index.sessions
-    : index.sessions && typeof index.sessions === "object"
-      ? Object.values(index.sessions)
-      : [];
-  if (sessionKey) {
-    const found = sessions.find((item) => {
-      if (!item || typeof item !== "object") return false;
-      return [item.key, item.sessionKey, item.id, item.conversationId].some((value) => trim(value) === sessionKey);
-    });
-    if (found) return found;
-  }
-  return sessions.length ? sessions[sessions.length - 1] : null;
-}
-
-async function recentJsonlFiles(dir) {
-  let entries = [];
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const files = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-    const file = path.join(dir, entry.name);
-    try {
-      const stat = await fs.stat(file);
-      files.push({ file, mtimeMs: stat.mtimeMs });
-    } catch {}
-  }
-  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return files.map((item) => item.file);
-}
-
-function runtimeSessionDirectories() {
-  const home = trim(process.env.HOME);
-  const roots = [
-    home ? path.join(home, ".openclaw", "agents", "main", "sessions") : "",
-    home ? path.join(home, ".openclaw", "sessions") : "",
-    path.join(process.cwd(), ".openclaw", "agents", "main", "sessions"),
-  ];
-  return [...new Set(roots.filter(Boolean))];
-}
-
 async function readAttemptEnvelope(cfg, envelope) {
   const alias = assignmentAttemptAlias(envelope);
   return alias ? readTaskEnvelope(cfg, alias) : null;
@@ -2979,92 +3001,6 @@ async function readAttemptEnvelope(cfg, envelope) {
 
 function normalizedSessionContentType(value) {
   return trim(value).toLowerCase().replace(/[-_]/g, "");
-}
-
-function sessionActivityKind(record) {
-  if (!record || typeof record !== "object") return { kind: "session_event", toolName: "" };
-  const message = record.message && typeof record.message === "object" ? record.message : record;
-  const role = trim(message.role || record.role || record.data?.role).toLowerCase();
-  const content = Array.isArray(message.content)
-    ? message.content
-    : Array.isArray(record.content)
-      ? record.content
-      : [];
-  const contentTypes = content.map((entry) => normalizedSessionContentType(entry?.type || entry?.kind));
-  const toolEntry = content.find((entry) =>
-    ["tooluse", "toolcall", "functioncall"].includes(normalizedSessionContentType(entry?.type || entry?.kind)),
-  );
-  const toolName = trim(
-    toolEntry?.name ||
-      toolEntry?.toolName ||
-      record.toolName ||
-      record.tool_name ||
-      record.data?.toolName,
-  );
-  if (["tool", "toolresult", "tool_result"].includes(role) || contentTypes.some((type) => ["toolresult", "functionresult"].includes(type))) {
-    return { kind: "tool_result", toolName };
-  }
-  if (contentTypes.some((type) => ["tooluse", "toolcall", "functioncall"].includes(type))) {
-    return { kind: "tool_call", toolName };
-  }
-  if (role === "assistant") return { kind: "assistant_message", toolName: "" };
-  if (role === "user") return { kind: "user_message", toolName: "" };
-  return { kind: trim(record.type || record.event || "session_event").toLowerCase(), toolName };
-}
-
-async function latestRuntimeSessionActivity(sinceMs = 0) {
-  let latest = null;
-  for (const dir of runtimeSessionDirectories()) {
-    for (const file of (await recentJsonlFiles(dir)).slice(0, 5)) {
-      try {
-        const stat = await fs.stat(file);
-        if (!stat.isFile() || stat.mtimeMs + 1000 < sinceMs) continue;
-        if (latest && latest.mtimeMs >= stat.mtimeMs) continue;
-        const tail = await readTextTail(file, 96 * 1024);
-        let lastRecord = null;
-        let lastAssistantText = "";
-        let lastAssistantAt = "";
-        let lastToolOutcome = null;
-        let lastToolAt = "";
-        const toolCalls = new Map();
-        for (const line of tail.split(/\r?\n/)) {
-          if (!line.trim()) continue;
-          try {
-            const record = JSON.parse(line);
-            const recordMs = sessionRecordTimestampMs(record);
-            if (sinceMs > 0 && recordMs > 0 && recordMs + 1000 < sinceMs) continue;
-            lastRecord = record;
-            const assistantText = normalizeAssistantSessionText(assistantTextFromRecord(record));
-            if (assistantText) {
-              lastAssistantText = assistantText.slice(0, 4000);
-              lastAssistantAt = recordMs > 0 ? new Date(recordMs).toISOString() : "";
-            }
-            const toolOutcome = sessionToolOutcome(record, toolCalls);
-            if (toolOutcome) {
-              lastToolOutcome = toolOutcome;
-              lastToolAt = recordMs > 0 ? new Date(recordMs).toISOString() : "";
-            }
-          } catch {}
-        }
-        if (!lastRecord) continue;
-        const classification = sessionActivityKind(lastRecord);
-        const recordMs = sessionRecordTimestampMs(lastRecord);
-        latest = {
-          mtimeMs: stat.mtimeMs,
-          lastSessionEventAt: new Date(Math.max(recordMs, stat.mtimeMs)).toISOString(),
-          sessionCursor: [path.basename(file), stat.size, Math.trunc(stat.mtimeMs)].join(":"),
-          lastActivityKind: classification.kind,
-          pendingToolName: classification.kind === "tool_call" ? classification.toolName : "",
-          lastAssistantText,
-          lastAssistantAt,
-          lastToolName: trim(lastToolOutcome?.toolName),
-          lastToolFailed: lastToolOutcome?.failed === true,
-          lastToolAt,
-        };
-      } catch {}
-    }
-  }
-  return latest;
 }
 
 async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log }) {
@@ -3095,10 +3031,10 @@ async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log }
     if (inFlight) return;
     inFlight = true;
     try {
-      const observed = await latestRuntimeSessionActivity(startedAt);
-      if (observed && (!lastSession || observed.mtimeMs >= lastSession.mtimeMs)) {
-        lastSession = observed;
-      }
+	  // OpenClaw 8.1 stores active sessions in SQLite. Activity evidence is
+	  // supplied by the official message/tool hooks; this heartbeat never reads
+	  // transcript files or private database tables.
+	  const observed = null;
       const sessionAgeMs = lastSession ? Math.max(0, Date.now() - lastSession.mtimeMs) : Date.now() - startedAt;
       const quietForSeconds = Math.floor(sessionAgeMs / 1000);
       const stallCandidate = sessionAgeMs >= policy.softTimeoutSec * 3 * 1000;
@@ -3108,7 +3044,7 @@ async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log }
         // withActiveEnvelope has not returned, so a quiet session is still a
         // live model/tool turn. Mark it for an independent Leader review only
         // after a much longer unchanged interval; never label it failed or
-        // enqueue another assignment merely because JSONL is quiet.
+        // enqueue another assignment merely because hook evidence is quiet.
         else if (sessionAgeMs >= policy.softTimeoutSec * 1000) turnState = "quiet_healthy";
         else turnState = lastSession ? "running" : "starting";
       }
@@ -3167,92 +3103,11 @@ async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log }
   };
 }
 
-async function sessionFilesFromDispatchResult(dispatchResult) {
-  const storePath = trim(dispatchResult?.storePath);
-  const route = dispatchResult?.route || {};
-  const sessionKey = trim(route.sessionKey || route.sessionId || dispatchResult?.sessionKey);
-  const candidates = [];
-  if (storePath) {
-    candidates.push(storePath);
-    candidates.push(path.dirname(storePath));
-    candidates.push(path.join(storePath, "sessions"));
-  }
-  const files = [];
-  const dirs = [];
-  for (const candidate of [...new Set(candidates.filter(Boolean))]) {
-    try {
-      const stat = await fs.stat(candidate);
-      if (stat.isFile() && candidate.endsWith(".jsonl")) files.push(candidate);
-      if (stat.isDirectory()) dirs.push(candidate);
-    } catch {}
-  }
-  for (const dir of dirs) {
-    const index = await readJson(path.join(dir, "sessions.json"));
-    const record = sessionRecordFromIndex(index, sessionKey);
-		let foundExactSessionFile = false;
-    if (record) {
-      for (const key of ["sessionFile", "file", "path", "jsonlPath"]) {
-        const file = resolveSessionFile(dir, record[key]);
-				if (file) {
-					files.push(file);
-					foundExactSessionFile = true;
-				}
-      }
-    }
-		// A routed session identity is authoritative. Scan recent files only as an
-		// old-OpenClaw compatibility fallback when no exact session file is known.
-		if (!sessionKey || !foundExactSessionFile) {
-			files.push(...(await recentJsonlFiles(dir)).slice(0, 5));
-		}
-  }
-  return [...new Set(files)];
-}
-
-async function readLatestAssistantTextFromDispatch(dispatchResult) {
-  const texts = await readAssistantTextsFromDispatch(dispatchResult);
-  return texts.length ? texts[texts.length - 1] : "";
-}
-
 function sessionRecordTimestampMs(record) {
   const value = record?.timestamp || record?.createdAt || record?.created_at || record?.data?.timestamp;
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const parsed = Date.parse(String(value || ""));
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-async function readAssistantNarrativesFromDispatch(dispatchResult, sinceMs = 0) {
-  const collected = [];
-  const seen = new Set();
-  for (const file of await sessionFilesFromDispatchResult(dispatchResult)) {
-    const text = await readTextTail(file);
-    if (!text) continue;
-    for (const line of text.split(/\r?\n/)) {
-      const raw = line.trim();
-      if (!raw) continue;
-      try {
-        const record = JSON.parse(raw);
-        if (sinceMs > 0) {
-          const recordMs = sessionRecordTimestampMs(record);
-          if (recordMs > 0 && recordMs + 1000 < sinceMs) continue;
-        }
-        const candidate = normalizeAssistantSessionText(assistantTextFromRecord(record));
-        if (!candidate) continue;
-        const hash = createHash("sha256").update(candidate).digest("hex");
-        if (seen.has(hash)) continue;
-        seen.add(hash);
-        const sourceTimestampMs = sessionRecordTimestampMs(record);
-        collected.push({
-          text: candidate,
-          contentHash: hash,
-          sourceOccurredAt: sourceTimestampMs > 0 ? new Date(sourceTimestampMs).toISOString() : undefined,
-          sourceSequence: collected.length + 1,
-          sourceRecordId: trim(record?.id || record?.messageId || record?.message_id || record?.data?.id) || undefined,
-        });
-      } catch {}
-    }
-    if (collected.length) return collected.slice(-12);
-  }
-  return [];
 }
 
 function sessionToolOutcome(record, toolCalls = new Map()) {
@@ -3355,54 +3210,76 @@ function teamToolFamily(toolName) {
 	return "";
 }
 
-async function readTurnToolEvidenceFromDispatch(dispatchResult, sinceMs = 0) {
-	for (const file of await sessionFilesFromDispatchResult(dispatchResult)) {
-		const text = await readTextTail(file);
-		if (!text) continue;
-		const toolCalls = new Map();
-		let latest = null;
-		const latestByTeamFamily = new Map();
-		let sequence = 0;
-		for (const line of text.split(/\r?\n/)) {
-			const raw = line.trim();
-			if (!raw) continue;
-			try {
-				const record = JSON.parse(raw);
-				if (sinceMs > 0) {
-					const recordMs = sessionRecordTimestampMs(record);
-					if (recordMs > 0 && recordMs + 1000 < sinceMs) continue;
-				}
-				const outcome = sessionToolOutcome(record, toolCalls);
-				if (outcome) {
-					sequence += 1;
-					outcome.sequence = sequence;
-					latest = outcome;
-					const family = teamToolFamily(outcome.toolName);
-					if (family) latestByTeamFamily.set(family, outcome);
-				}
-			} catch {}
-		}
-		if (latest) {
-			const unresolved = [...latestByTeamFamily.values()]
-				.filter((outcome) => outcome.failed === true && outcome.retryable === true)
-				.sort((left, right) => right.sequence - left.sequence);
-			return {
-				lastToolOutcome: latest,
-				retryableTeamToolGap: unresolved[0] || null,
-				teamToolOutcomes: [...latestByTeamFamily.values()],
-				source: "dispatch_session",
-			};
-		}
+function redisTeamHookEvidenceFromDispatch(dispatchResult) {
+	return dispatchResult?.redisTeamHookEvidence || dispatchResult?.result?.redisTeamHookEvidence || {};
+}
+
+function maintenanceKey(cfg) {
+  return keyPrefix(cfg) + ":maintenance";
+}
+
+async function teamMaintenanceState(redis, cfg) {
+  const raw = await redis.command("GET", maintenanceKey(cfg));
+  if (!raw) return { enabled: false };
+  try {
+    const parsed = JSON.parse(String(raw));
+    return {
+      enabled: parsed?.enabled === true,
+      rolloutId: trim(parsed?.rolloutId),
+      reason: trim(parsed?.reason),
+    };
+  } catch {
+    return { enabled: ["1", "true", "on"].includes(trim(raw).toLowerCase()) };
+  }
+}
+
+async function readHookAssistantNarrativesFromDispatch(dispatchResult, sinceMs = 0) {
+	const evidence = redisTeamHookEvidenceFromDispatch(dispatchResult);
+	return (Array.isArray(evidence.assistantNarratives) ? evidence.assistantNarratives : [])
+		.filter((entry) => !sinceMs || Number(entry.occurredAtMs || 0) >= sinceMs)
+		.map((entry) => ({ ...entry, text: normalizeAssistantSessionText(entry.text) }))
+		.filter((entry) => entry.text);
+}
+
+async function readHookToolEvidenceFromDispatch(dispatchResult, sinceMs = 0) {
+	const evidence = redisTeamHookEvidenceFromDispatch(dispatchResult);
+	const events = (Array.isArray(evidence.toolEvents) ? evidence.toolEvents : [])
+		.filter((entry) => !sinceMs || Number(entry.occurredAtMs || 0) >= sinceMs);
+	const last = events.length ? events[events.length - 1] : null;
+	const latestByTeamFamily = new Map();
+	for (const entry of events) {
+		const family = teamToolFamily(entry.toolName);
+		if (family && entry.phase === "after") latestByTeamFamily.set(family, entry);
 	}
-	return { lastToolOutcome: null, retryableTeamToolGap: null, teamToolOutcomes: [], source: "dispatch_session_unavailable" };
-}
-
-async function readLastToolOutcomeFromDispatch(dispatchResult, sinceMs = 0) {
-	return (await readTurnToolEvidenceFromDispatch(dispatchResult, sinceMs)).lastToolOutcome;
-}
-
-async function readAssistantTextsFromDispatch(dispatchResult, sinceMs = 0) {
-  return (await readAssistantNarrativesFromDispatch(dispatchResult, sinceMs)).map((entry) => entry.text);
+	const retryableTeamToolGap = [...latestByTeamFamily.values()]
+		.reverse()
+		.find((entry) => entry.ok === false && entry.retryable === true) || null;
+	return {
+		lastToolOutcome: last ? {
+			toolName: trim(last.toolName),
+			failed: last.phase === "after" && last.ok === false,
+			retryable: last.retryable === true,
+			callId: trim(last.toolCallId),
+			toolCallId: trim(last.toolCallId),
+			code: trim(last.errorCode),
+			candidates: Array.isArray(last.candidates) ? last.candidates : [],
+		} : null,
+		retryableTeamToolGap: retryableTeamToolGap ? {
+			toolName: trim(retryableTeamToolGap.toolName),
+			failed: true,
+			retryable: true,
+			toolCallId: trim(retryableTeamToolGap.toolCallId),
+			code: trim(retryableTeamToolGap.errorCode),
+			candidates: Array.isArray(retryableTeamToolGap.candidates) ? retryableTeamToolGap.candidates : [],
+		} : null,
+		teamToolCalls: events.filter((entry) => teamToolFamily(entry.toolName)).map((entry) => ({
+			toolName: trim(entry.toolName),
+			toolFamily: teamToolFamily(entry.toolName),
+			callId: trim(entry.toolCallId),
+			phase: entry.phase,
+			failed: entry.phase === "after" && entry.ok === false,
+		})),
+	};
 }
 
 function lateNarrativeProjectionMeta(terminal) {
@@ -4503,6 +4380,13 @@ function createRuntime(api) {
 		const sourceRecordId = trim(message.id || message.messageId || message.message_id || event?.id) ||
 			[hookSessionKey(event, ctx), sourceSequence].filter(Boolean).join(":");
 		const contentHash = createHash("sha256").update(narrativeText).digest("hex");
+		projection.assistantNarratives.push({
+			text: narrativeText,
+			contentHash,
+			occurredAtMs: sourceTimestampMs,
+			sourceRecordId: sourceRecordId || undefined,
+		});
+		if (projection.assistantNarratives.length > 32) projection.assistantNarratives.shift();
 		projection.queue = projection.queue
 			.then(() => emitter(narrativeText, "before_message_write", {}, {
 				contentHash,
@@ -5708,12 +5592,24 @@ function createRuntime(api) {
 				sequence: 0,
 				terminalSubmitted: false,
 				sessionKeys: new Set(),
+				assistantNarratives: [],
+				toolEvents: [],
 			};
 			activeNarrativeProjections.add(projection);
 			try {
 				return await narrativeProjectionStorage.run(projection, async () => {
 					try {
-						return await fn();
+						const result = await fn();
+						const evidenceTarget = result?.dispatchResult && typeof result.dispatchResult === "object"
+							? result.dispatchResult
+							: result;
+						if (evidenceTarget && typeof evidenceTarget === "object") {
+							evidenceTarget.redisTeamHookEvidence = {
+								assistantNarratives: projection.assistantNarratives.slice(),
+								toolEvents: projection.toolEvents.slice(),
+							};
+						}
+						return result;
 					} finally {
 						await drainAssistantSessionNarratives(projection);
 					}
@@ -5730,6 +5626,32 @@ function createRuntime(api) {
 
 		observeAssistantSessionMessage(event, ctx) {
 			enqueueAssistantSessionNarrative(event, ctx);
+		},
+
+		observeToolHook(phase, event, ctx = {}) {
+			const projection = narrativeProjectionForContext(event, ctx);
+			if (!projection || !projection.envelope) return;
+			const toolName = trim(event?.toolName || event?.name);
+			if (!toolName) return;
+			const structuredResult = event?.result && typeof event.result === "object" ? event.result : {};
+			const errorValue = event?.error || structuredResult.error;
+			const failed = phase === "after" && (
+				!!errorValue || event?.isError === true || structuredResult.ok === false || structuredResult.success === false
+			);
+			const retryable = failed && !!teamToolFamily(toolName) && structuredResult.retryable !== false;
+			projection.toolEvents.push({
+				phase,
+				toolName,
+				toolCallId: trim(event?.toolCallId || event?.callId || ctx?.toolCallId),
+				ok: phase === "before" ? undefined : !failed,
+				retryable: structuredResult.retryable === true || retryable,
+				errorCode: trim(errorValue?.code || event?.errorCode || structuredResult.code),
+				candidates: Array.isArray(structuredResult.candidates)
+					? structuredResult.candidates.map(trim).filter(Boolean).slice(0, 16)
+					: [],
+				occurredAtMs: Date.now(),
+			});
+			if (projection.toolEvents.length > 64) projection.toolEvents.shift();
 		},
 
 		async flushAssistantSessionNarratives() {
@@ -6536,11 +6458,14 @@ async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
 
   async function emitPresence() {
     try {
+		const maintenance = await teamMaintenanceState(presenceRedis, cfg);
       const status = await writeLocalStatus(cfg, {
         liveness: "online",
+		maintenance: maintenance.enabled,
+		maintenanceRolloutId: maintenance.rolloutId || "",
       });
       await presenceRedis.command("HSET", presenceKey(cfg), cfg.memberId, JSON.stringify(status));
-		await releaseAllReadyDeferredAssignments(presenceRedis, cfg);
+		if (!maintenance.enabled) await releaseAllReadyDeferredAssignments(presenceRedis, cfg);
     } catch (err) {
       log.warn("redis-team: presence update failed: " + (err.message || err));
     }
@@ -6554,6 +6479,12 @@ async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
     let pendingDrainBatches = 3;
     while (running) {
       try {
+		const maintenance = await teamMaintenanceState(redis, cfg);
+		if (maintenance.enabled) {
+			await emitPresence();
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			continue;
+		}
         const response = await redis.command(
           "XREADGROUP",
           "GROUP",
@@ -6568,6 +6499,13 @@ async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
           readID,
         );
         const messages = parseReadGroupResponse(response);
+		if ((await teamMaintenanceState(redis, cfg)).enabled) {
+			// XREADGROUP may already have been blocked when the controller enabled
+			// maintenance. Leave the newly delivered entries pending and process
+			// them only after maintenance is cleared; never acknowledge or dispatch.
+			readID = "0";
+			continue;
+		}
         if (readID !== ">") {
           if (messages.length === 0) {
             readID = ">";
@@ -6964,6 +6902,7 @@ export default definePluginEntry({
     api.on(
       "before_tool_call",
       async (event, ctx) => {
+				runtime.observeToolHook("before", event, ctx);
 				const processDecision = teamProcessToolDecision(runtime.currentActiveEnvelope(), event);
 				if (processDecision.block) return processDecision;
         if (trim(event?.toolName).toLowerCase() !== "browser") return;
@@ -6991,6 +6930,7 @@ export default definePluginEntry({
     api.on(
       "after_tool_call",
       async (event, ctx) => {
+				runtime.observeToolHook("after", event, ctx);
         if (trim(event?.toolName).toLowerCase() !== "browser") return;
 				const callKey = browserHookContextKey(event, ctx);
 				const guardKey = (callKey && reviewerBrowserGuardKeysByCall.get(callKey)) || runtime.browserGuardKey(event, ctx);
@@ -7059,8 +6999,23 @@ export default definePluginEntry({
       }
     }
 
-    // --- Register Tools (backward compatible) ---
-    api.registerTool({
+    // --- Register Team tools through the OpenClaw 8.1 context factory. ---
+    // A normal Web/UI session receives no Team tool surface. The host-owned
+    // channel/session/native group facts, not model arguments, authorize the
+    // current Team binding.
+    function registerBoundTeamTool(tool) {
+      api.registerTool((ctx = {}) => {
+        const cfg = readChannelConfig(api.config || {});
+        const expectedSuffix = ":" + CHANNEL_ID + ":group:" + safeName(cfg.teamId);
+        const channelMatches = trim(ctx.messageChannel) === CHANNEL_ID;
+        const sessionMatches = trim(ctx.sessionKey).endsWith(expectedSuffix);
+        const nativeMatches = !trim(ctx.nativeChannelId) || trim(ctx.nativeChannelId) === trim(cfg.teamId);
+        if (!channelMatches || !sessionMatches || !nativeMatches) return null;
+        return tool;
+      }, { name: tool.name, optional: true });
+    }
+
+    registerBoundTeamTool({
       name: "team_send",
       label: "Team Send",
       description: "Send a message to another team member via Redis Streams.",
@@ -7071,7 +7026,7 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
       },
     });
-    api.registerTool({
+    registerBoundTeamTool({
       name: "team_status",
       label: "Team Status",
       description: "Read team member status snapshots.",
@@ -7080,7 +7035,7 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, status: await runtime.status(params?.memberId) }, null, 2) }] };
       },
     });
-    api.registerTool({
+    registerBoundTeamTool({
       name: "team_update_progress",
       label: "Team Update Progress",
       description: "Update this member's structured task status. Active Team assignment identity is inherited automatically; do not invent assignment or work ids.",
@@ -7089,7 +7044,7 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, status: await runtime.updateProgress(params || {}) }, null, 2) }] };
       },
     });
-    api.registerTool({
+    registerBoundTeamTool({
       name: "team_complete_task",
       label: "Team Complete Task",
       description: "Submit completion for the active Team assignment or Leader root task. Active identity is inherited automatically; do not invent assignment or work ids.",
@@ -7098,7 +7053,7 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, ...(await runtime.completeTask(params || {})) }, null, 2) }] };
       },
     });
-    api.registerTool({
+    registerBoundTeamTool({
       name: "team_artifact_write",
       label: "Team Artifact Write",
       description: "Atomically write a UTF-8 artifact inside the current Team workspace with cooperative permissions.",
@@ -7107,7 +7062,7 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, artifact: await runtime.artifactWrite(params || {}) }, null, 2) }] };
       },
     });
-    api.registerTool({
+    registerBoundTeamTool({
       name: "team_artifact_read",
       label: "Team Artifact Read",
       description: "Read a UTF-8 artifact from the current Team workspace without allowing path traversal.",
@@ -7116,7 +7071,7 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, artifact: await runtime.artifactRead(params || {}) }, null, 2) }] };
       },
     });
-    api.registerTool({
+    registerBoundTeamTool({
       name: "team_artifact_preview",
       label: "Team Artifact Preview",
       description: "Create a signed, read-only ClawManager URL for opening a current-Team file in Browser. The URL remains valid for the life of the Team token. Use this instead of file:// or a temporary server.",
@@ -7125,7 +7080,7 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, artifact: await runtime.artifactPreview(params || {}) }, null, 2) }] };
       },
     });
-    api.registerTool({
+    registerBoundTeamTool({
       name: "team_artifact_list",
       label: "Team Artifact List",
       description: "List artifacts in the current Team workspace without following symlinks.",
@@ -7134,7 +7089,7 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, ...(await runtime.artifactList(params || {})) }, null, 2) }] };
       },
     });
-    api.registerTool({
+    registerBoundTeamTool({
       name: "team_artifact_mkdir",
       label: "Team Artifact Mkdir",
       description: "Create a cooperative member-scoped artifact directory inside the current Team workspace.",
@@ -7157,7 +7112,7 @@ export default definePluginEntry({
           order: 200,
         },
         capabilities: {
-          chatTypes: ["direct"],
+          chatTypes: ["direct", "group"],
           media: false,
           polls: false,
           voice: false,
@@ -7200,7 +7155,9 @@ export default definePluginEntry({
               type: "object",
               additionalProperties: {
                 type: "object",
+                additionalProperties: false,
                 properties: {
+                  enabled: { type: "boolean", default: false },
                   redisUrl: { type: "string", description: "Redis connection URL" },
                   teamId: { type: "string", description: "Team identifier" },
                   memberId: { type: "string", description: "Your member ID in the team" },
@@ -7214,6 +7171,7 @@ export default definePluginEntry({
                   dlqKey: { type: "string" },
                   embeddedTimeoutSeconds: { type: "number", minimum: 1, default: 1800 },
                   fromEnv: { type: "boolean", default: true },
+                  managerUrl: { type: "string" },
                 },
               },
             },
@@ -7398,7 +7356,8 @@ export default definePluginEntry({
                     let contextActiveResult = null;
                     let contextDispatchFailed = false;
                     try {
-                      contextActiveResult = await runtime.withActiveEnvelope(envelope, async () => dispatchInboundDirectDmWithRuntime({
+                      contextActiveResult = await runtime.withActiveEnvelope(envelope, async () =>
+						runtime.withNarrativeProjection(envelope, null, async () => dispatchInboundRedisTeamGroupWithRuntime({
                         cfg: ctx.cfg,
                         runtime: { channel: ctx.channelRuntime },
                         channel: CHANNEL_ID,
@@ -7412,7 +7371,7 @@ export default definePluginEntry({
                         rawBody: textIn,
                         messageId: envelope.messageId,
                         timestamp: ts,
-                        commandAuthorized: true,
+                        commandAuthorized: false,
                         bodyForAgent: textIn,
                         provider: CHANNEL_ID,
                         surface: "Redis Team",
@@ -7445,7 +7404,7 @@ export default definePluginEntry({
                               (err?.message || String(err)),
                           );
                         },
-                      }), cfg);
+                      })), cfg);
                     } catch (err) {
                       contextDispatchFailed = true;
                       ctx.log?.warn?.(
@@ -7463,7 +7422,7 @@ export default definePluginEntry({
                       contextActiveResult = mergeActiveTurnFacts(contextActiveResult, durableTurnFacts);
                       const contextDispatchResult =
                         contextActiveResult?.result?.dispatchResult || contextActiveResult?.result;
-                      const turnToolEvidence = await readTurnToolEvidenceFromDispatch(
+                      const turnToolEvidence = await readHookToolEvidenceFromDispatch(
                         contextDispatchResult,
                         contextDispatchStartedAt,
                       );
@@ -7482,13 +7441,13 @@ export default definePluginEntry({
                         contextOnly: true,
                       });
                       if (!terminalAfterDispatch && !contextActiveResult?.completed && !contextActiveResult?.completionPending) {
-                        const narratives = await readAssistantNarrativesFromDispatch(
+                        const narratives = await readHookAssistantNarrativesFromDispatch(
                           contextDispatchResult,
                           contextDispatchStartedAt,
                         );
                         const fallbackText = narratives.length
                           ? narratives[narratives.length - 1].text
-                          : await readLatestAssistantTextFromDispatch(contextDispatchResult);
+                          : "";
                         const turnEvent = turnFinishedWithoutCompletionEvent(envelope, {
                           assistantNarratives: narratives,
                           fallbackText,
@@ -7597,7 +7556,7 @@ export default definePluginEntry({
                   try {
                     activeResult = await runtime.withActiveEnvelope(envelope, async () =>
                       runtime.withNarrativeProjection(envelope, emitAgentNarrative, async () => {
-                    const dispatchResult = await dispatchInboundDirectDmWithRuntime({
+                    const dispatchResult = await dispatchInboundRedisTeamGroupWithRuntime({
                     cfg: ctx.cfg,
                     runtime: { channel: ctx.channelRuntime },
                     channel: CHANNEL_ID,
@@ -7611,7 +7570,7 @@ export default definePluginEntry({
                     rawBody: textIn,
                     messageId: envelope.messageId,
                     timestamp: ts,
-                    commandAuthorized: true,
+                    commandAuthorized: false,
                     bodyForAgent: appendRedisTeamCompletionGuidance(teamContextBody, envelope),
                     provider: CHANNEL_ID,
                     surface: "Redis Team",
@@ -7705,18 +7664,18 @@ export default definePluginEntry({
 
                   const durableTurnFacts = await readTurnFacts(cfg, envelope);
                   activeResult = mergeActiveTurnFacts(activeResult, durableTurnFacts);
-                  const assistantNarratives = await readAssistantNarrativesFromDispatch(
+                  const assistantNarratives = await readHookAssistantNarrativesFromDispatch(
                     activeResult?.result?.dispatchResult,
                     dispatchStartedAt,
                   );
-                  const turnToolEvidence = await readTurnToolEvidenceFromDispatch(
+                  const turnToolEvidence = await readHookToolEvidenceFromDispatch(
                     activeResult?.result?.dispatchResult,
                     dispatchStartedAt,
                   );
                   const lastToolOutcome = turnToolEvidence.lastToolOutcome;
                   const fallbackText = assistantNarratives.length
                     ? assistantNarratives[assistantNarratives.length - 1].text
-                    : await readLatestAssistantTextFromDispatch(activeResult?.result?.dispatchResult);
+                    : "";
                   const routing = await activeMemberRouting(cfg, activeResult?.outbound);
                   const workerOutboundText = routing.workerDelivery
                     ? trim(activeResult?.outbound?.message?.text)

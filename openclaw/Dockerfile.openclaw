@@ -19,14 +19,19 @@ FROM node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd
 
 RUN test "$(node --version)" = "v22.23.1"
 
-FROM lscr.io/linuxserver/webtop:ubuntu-kde
+FROM lscr.io/linuxserver/webtop:ubuntu-kde-version-cc2e18a4@sha256:5005ffafe50117dfd8b28e3c37efd2cf603e37bc3741d472b1540739492d3ee0
 
 ENV PUID=1000
 ENV PGID=1000
 ENV TZ=Asia/Shanghai
 ENV CLAWMANAGER_RUNTIME_TYPE=openclaw
+ENV CLAWMANAGER_OPENCLAW_VERSION=2026.8.1
 
-LABEL shm_size="1gb"
+LABEL shm_size="1gb" \
+      io.clawmanager.runtime.type="openclaw" \
+      io.clawmanager.openclaw.version="2026.8.1" \
+      io.clawmanager.upgrade.strategy="openclaw-sqlite-v1" \
+      io.clawmanager.upgrade.protocol="openclaw-upgrade-v3"
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -53,7 +58,7 @@ RUN set -eux; \
 
 COPY --from=node-runtime /usr/local /usr/local
 
-RUN npm install -g openclaw@2026.7.1-2
+RUN npm install -g openclaw@2026.8.1
 
 COPY openclaw/patches/patch_memory_core_startup_migration.mjs /usr/local/share/openclaw/patches/patch_memory_core_startup_migration.mjs
 COPY openclaw/patches/test_memory_core_startup_migration.mjs /usr/local/share/openclaw/patches/test_memory_core_startup_migration.mjs
@@ -61,16 +66,14 @@ RUN node /usr/local/share/openclaw/patches/patch_memory_core_startup_migration.m
   && node /usr/local/share/openclaw/patches/patch_memory_core_startup_migration.mjs --verify \
   && node /usr/local/share/openclaw/patches/test_memory_core_startup_migration.mjs
 
-COPY openclaw/patches/patch_legacy_task_sidecar_startup_migration.mjs /usr/local/share/openclaw/patches/patch_legacy_task_sidecar_startup_migration.mjs
-COPY openclaw/patches/test_legacy_task_sidecar_startup_migration.mjs /usr/local/share/openclaw/patches/test_legacy_task_sidecar_startup_migration.mjs
-RUN node /usr/local/share/openclaw/patches/patch_legacy_task_sidecar_startup_migration.mjs --patch \
-  && node /usr/local/share/openclaw/patches/patch_legacy_task_sidecar_startup_migration.mjs --verify \
-  && node /usr/local/share/openclaw/patches/test_legacy_task_sidecar_startup_migration.mjs
+COPY openclaw/patches/test_openclaw_8_1_task_migration_contract.mjs /usr/local/share/openclaw/patches/test_openclaw_8_1_task_migration_contract.mjs
+RUN node /usr/local/share/openclaw/patches/test_openclaw_8_1_task_migration_contract.mjs
 
 COPY openclaw/patches/patch_browser_proxy_navigation.mjs /usr/local/share/openclaw/patches/patch_browser_proxy_navigation.mjs
 COPY openclaw/patches/test_browser_proxy_navigation.mjs /usr/local/share/openclaw/patches/test_browser_proxy_navigation.mjs
 COPY openclaw/patches/test_browser_proxy_navigation_integration.mjs /usr/local/share/openclaw/patches/test_browser_proxy_navigation_integration.mjs
 COPY openclaw/patches/test_redis_team_plugin_hooks.mjs /usr/local/share/openclaw/patches/test_redis_team_plugin_hooks.mjs
+COPY openclaw/patches/test_redis_team_channel_config.mjs /usr/local/share/openclaw/patches/test_redis_team_channel_config.mjs
 RUN node /usr/local/share/openclaw/patches/patch_browser_proxy_navigation.mjs --patch \
   && node /usr/local/share/openclaw/patches/patch_browser_proxy_navigation.mjs --verify \
   && node /usr/local/share/openclaw/patches/test_browser_proxy_navigation.mjs \
@@ -85,9 +88,12 @@ COPY openclaw/config/openclaw-agent /defaults/openclaw-agent
 COPY --from=agent-builder /out/openclaw-agent /usr/local/bin/openclaw-agent
 COPY --from=agent-builder /out/clawmanager-agent /usr/local/bin/clawmanager-agent
 COPY openclaw/scripts/wrapped-chromium /usr/local/bin/wrapped-chromium
+COPY openclaw/scripts/install-openclaw-plugin /usr/local/bin/install-openclaw-plugin
 COPY openclaw/scripts/openclaw-agent-run /etc/services.d/openclaw-agent/run
 COPY openclaw/scripts/openclaw-agent-finish /etc/services.d/openclaw-agent/finish
 COPY clawmanager-agent/scripts/clawmanager-agent-run /etc/services.d/clawmanager-agent/run
+
+ENV CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION=0.3.0
 
 # Preinstall the DingTalk channel so its channel id validates before the
 # agent's first startup reconciliation.
@@ -95,21 +101,29 @@ RUN sed -i 's/\r$//' /etc/services.d/openclaw-agent/run \
   && sed -i 's/\r$//' /etc/services.d/openclaw-agent/finish \
   && sed -i 's/\r$//' /etc/services.d/clawmanager-agent/run \
   && sed -i 's/\r$//' /usr/local/bin/wrapped-chromium \
+  && sed -i 's/\r$//' /usr/local/bin/install-openclaw-plugin \
   && chmod +x /etc/services.d/openclaw-agent/run \
   && chmod +x /etc/services.d/openclaw-agent/finish \
   && chmod +x /etc/services.d/clawmanager-agent/run \
   && chmod +x /usr/local/bin/openclaw-agent \
   && chmod +x /usr/local/bin/clawmanager-agent \
   && chmod +x /usr/local/bin/wrapped-chromium \
+  && chmod +x /usr/local/bin/install-openclaw-plugin \
   && mkdir -p /tmp/openclaw-plugin-pack \
   && cd /tmp/openclaw-redis-team \
   && npm pack --pack-destination /tmp/openclaw-plugin-pack \
   && redis_team_tgz="$(find /tmp/openclaw-plugin-pack -maxdepth 1 -name '*.tgz' -print -quit)" \
   && test -n "${redis_team_tgz}" \
-  && HOME=/defaults openclaw plugins install "${redis_team_tgz}" \
-  && HOME=/defaults openclaw plugins install @dingtalk-real-ai/dingtalk-connector@0.8.24 \
-  && HOME=/defaults openclaw plugins install @wecom/wecom-openclaw-plugin@2026.7.2-beta.1 \
-  && HOME=/defaults openclaw plugins install @openclaw/feishu@2026.7.1 \
+  && if HOME=/defaults install-openclaw-plugin "${redis_team_tgz}" --force >/tmp/plugin-consent-negative.log 2>&1; then exit 1; fi \
+  && HOME=/defaults install-openclaw-plugin "${redis_team_tgz}" --force --accept-capabilities \
+  && HOME=/defaults install-openclaw-plugin @dingtalk-real-ai/dingtalk-connector@0.8.25 --force --accept-capabilities \
+  && HOME=/defaults install-openclaw-plugin @wecom/wecom-openclaw-plugin@2026.8.17 --force --accept-capabilities \
+  && HOME=/defaults install-openclaw-plugin @openclaw/feishu@2026.8.1 --force --accept-capabilities \
+  && cp /defaults/.openclaw/openclaw.json /tmp/openclaw-default.json \
+  && node /usr/local/share/openclaw/patches/test_redis_team_channel_config.mjs /defaults/.openclaw/openclaw.json \
+  && HOME=/defaults openclaw config validate \
+  && mv /tmp/openclaw-default.json /defaults/.openclaw/openclaw.json \
+  && HOME=/defaults openclaw config validate \
   && cd / \
   && rm -rf /tmp/openclaw-redis-team /tmp/openclaw-plugin-pack \
   && chown -R abc:abc /defaults/.openclaw \

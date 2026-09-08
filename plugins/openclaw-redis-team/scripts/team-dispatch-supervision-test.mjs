@@ -14,7 +14,7 @@ process.env.XDG_STATE_HOME = state;
 const distPath = path.resolve(import.meta.dirname, "..", "dist", "index.js");
 const source = (await fs.readFile(distPath, "utf8"))
   .replace('import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";', "const definePluginEntry = (entry) => entry;")
-  .replace('import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/direct-dm";', "const dispatchInboundDirectDmWithRuntime = async () => ({});");
+  .replace('import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";', "const dispatchInboundDirectDmWithRuntime = async () => ({});");
 const testSource = source + "\nexport { createRuntime, RedisClient, rootWorkflowStateKey };\n";
 const pluginModule = await import(`data:text/javascript;base64,${Buffer.from(testSource).toString("base64")}`);
 
