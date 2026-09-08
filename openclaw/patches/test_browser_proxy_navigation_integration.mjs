@@ -55,11 +55,12 @@ try {
   const distDir = path.join(packageRoot, "dist");
   const pwFile = fs.readdirSync(distDir).find((name) => /^pw-ai-.*\.js$/.test(name));
   if (!pwFile) throw new Error("OpenClaw Playwright bridge was not found");
-  const pw = await import(pathToFileURL(path.join(distDir, pwFile)).href);
-  const ssrfPolicy = {
-    dangerouslyAllowPrivateNetwork: true,
-    __clawmanagerBrowserProxyMode: "explicit-browser-proxy",
-  };
+  const pwModule = await import(pathToFileURL(path.join(distDir, pwFile)).href);
+  const pw = pwModule.pwAi;
+  if (!pw || typeof pw.createPageViaPlaywright !== "function") {
+    throw new Error("OpenClaw 8.1 Playwright runtime object was not exported");
+  }
+  const ssrfPolicy = { dangerouslyAllowPrivateNetwork: true };
   const page = await pw.createPageViaPlaywright({
     cdpUrl,
     url: previewUrl,
@@ -68,13 +69,14 @@ try {
   });
   assert.equal(page.url, previewUrl);
 
-  const snapshot = await pw.snapshotAiViaPlaywright({ cdpUrl, targetId: page.targetId, ssrfPolicy });
+  const snapshot = await pw.snapshotAiViaPlaywright({ cdpUrl, targetId: page.targetId, ssrfPolicy, browserProxyMode: "explicit-browser-proxy" });
   assert.match(JSON.stringify(snapshot), /increment/i);
 
   const before = await pw.executeActViaPlaywright({
     cdpUrl,
     targetId: page.targetId,
     ssrfPolicy,
+    browserProxyMode: "explicit-browser-proxy",
     evaluateEnabled: true,
     action: { kind: "evaluate", fn: "() => Number(document.querySelector('#value').textContent)" },
   });
@@ -83,6 +85,7 @@ try {
     cdpUrl,
     targetId: page.targetId,
     ssrfPolicy,
+    browserProxyMode: "explicit-browser-proxy",
     evaluateEnabled: true,
     action: { kind: "click", selector: "#inc" },
   });
@@ -90,6 +93,7 @@ try {
     cdpUrl,
     targetId: page.targetId,
     ssrfPolicy,
+    browserProxyMode: "explicit-browser-proxy",
     evaluateEnabled: true,
     action: { kind: "evaluate", fn: "() => Number(document.querySelector('#value').textContent)" },
   });

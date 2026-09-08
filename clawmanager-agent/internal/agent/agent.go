@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net"
 	"net/http"
@@ -67,6 +68,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}()
 	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), a.cfg.ProcessStopTimeout+5*time.Second)
+		if err := a.manager.StopAll(stopCtx); err != nil {
+			log.Printf("runtime-agent shutdown gateway stop failed: %v", err)
+		}
+		stopCancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = server.Shutdown(shutdownCtx)
 		cancel()
@@ -143,9 +149,18 @@ func (a *Agent) registerUntilReady(ctx context.Context) error {
 }
 
 func (a *Agent) heartbeatLoop(ctx context.Context) {
+	a.reportHeartbeat(ctx)
+	phase := heartbeatPhaseOffset(a.cfg.PodUID, a.cfg.PodName, a.cfg.HeartbeatInterval)
+	first := time.NewTimer(a.cfg.HeartbeatInterval + phase)
+	defer first.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-first.C:
+		a.reportHeartbeat(ctx)
+	}
 	ticker := time.NewTicker(a.cfg.HeartbeatInterval)
 	defer ticker.Stop()
-	a.reportHeartbeat(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -154,6 +169,26 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			a.reportHeartbeat(ctx)
 		}
 	}
+}
+
+func heartbeatPhaseOffset(podUID, podName string, interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 0
+	}
+	window := interval / 4
+	if window > 500*time.Millisecond {
+		window = 500 * time.Millisecond
+	}
+	if window <= 0 {
+		return 0
+	}
+	identity := podUID
+	if identity == "" {
+		identity = podName
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(identity))
+	return time.Duration(uint64(hash.Sum32()) % uint64(window))
 }
 
 func (a *Agent) reportHeartbeat(ctx context.Context) {

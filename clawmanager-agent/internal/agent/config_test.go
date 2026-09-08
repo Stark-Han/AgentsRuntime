@@ -2,6 +2,18 @@ package agent
 
 import "testing"
 
+func TestLoadConfigFromEnvRejectsNonPositiveHeartbeatInterval(t *testing.T) {
+	t.Setenv("CLAWMANAGER_RUNTIME_TYPE", "openclaw")
+	t.Setenv("RUNTIME_AGENT_CONTROL_TOKEN", "control-token")
+	t.Setenv("RUNTIME_AGENT_REPORT_TOKEN", "report-token")
+	t.Setenv("CLAWMANAGER_RUNTIME_IMAGE_REF", "local/openclaw:dev")
+	t.Setenv("RUNTIME_AGENT_HEARTBEAT_INTERVAL", "0s")
+
+	if _, err := LoadConfigFromEnv(); err == nil {
+		t.Fatal("LoadConfigFromEnv() error = nil, want non-positive heartbeat interval error")
+	}
+}
+
 func TestLoadConfigFromEnvUsesRuntimeAgentDefaults(t *testing.T) {
 	t.Setenv("CLAWMANAGER_RUNTIME_TYPE", "openclaw")
 	t.Setenv("RUNTIME_AGENT_CONTROL_TOKEN", "control-token")
