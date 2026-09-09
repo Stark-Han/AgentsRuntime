@@ -156,9 +156,9 @@ docker buildx build \
 
 ### Hermes Lite
 
-The separate headless candidate is verified by `hermes-lite-verify.yml`, which
-retains an OCI image, SBOM and provenance without publishing. Complete the
-[Hermes Lite release gates](hermes/HERMES-LITE-RELEASE.md) before publishing and
+The unified `docker-ghcr.yml` image matrix builds and publishes Hermes Lite with
+`hermes/Dockerfile.lite`, alongside the other Pro and Lite runtime images.
+Complete the [Hermes Lite release gates](hermes/HERMES-LITE-RELEASE.md) before
 deploying a tested immutable digest. Validate each target architecture separately.
 
 ### OpenClaw
