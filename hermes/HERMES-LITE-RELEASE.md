@@ -63,6 +63,7 @@ one JavaScript file and needs no runtime node_modules. SBOM generation additiona
 scans the Dashboard build stage so bundled npm dependencies remain inventoried.
 
 ```bash
+python -m pip install --requirement hermes/tests/requirements.txt
 python -m unittest discover -s hermes/tests -p 'test_lite_*.py'
 python hermes/scripts/verify_lite_release.py \
   --lock hermes/hermes-lite.lock.json --upstream
