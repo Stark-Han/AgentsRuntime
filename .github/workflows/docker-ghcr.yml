@@ -73,11 +73,13 @@ jobs:
             "deepseek-harness-lite|.|./deepseek-harness/Dockerfile.lite|deepseek-harness-lite"
           )
 
-          # Dependency changes on the default branch automatically publish only
-          # the two DeepSeek Harness variants. A manual dispatch keeps the
-          # existing behavior and publishes every runtime in the matrix.
+          # Changes on the default branch publish the OpenClaw and DeepSeek
+          # variants selected by the workflow path filter. A manual dispatch
+          # keeps the existing behavior and publishes every runtime in the matrix.
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             specs=(
+              "openclaw|.|./openclaw/Dockerfile.openclaw|openclaw"
+              "openclaw-lite|.|./openclaw/Dockerfile.openclaw|openclaw-lite"
               "deepseek-harness|.|./deepseek-harness/Dockerfile.pro|deepseek-harness"
               "deepseek-harness-lite|.|./deepseek-harness/Dockerfile.lite|deepseek-harness-lite"
             )
