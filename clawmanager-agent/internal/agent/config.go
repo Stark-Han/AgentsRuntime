@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -112,6 +113,27 @@ func LoadConfigFromEnv() (Config, error) {
 	cfg.AllowedOrigins = uniqueOrigins(backendOrigin)
 	cfg.PublicOrigin = backendOrigin
 	cfg.TrustedProxies = trustedProxiesFromEnvOrPodIP(cfg.PodIP)
+	if runtimeType == "hermes" && os.Getenv("CLAWMANAGER_HERMES_DESKTOP_WEB_ENABLED") == "true" {
+		// The Lite boundary accepts only explicitly configured trust. Do not
+		// infer a cluster CIDR from the Pod IP or use a public backend URL.
+		cfg.PublicOrigin = strings.TrimSpace(os.Getenv("CLAWMANAGER_CONTROL_UI_ORIGIN"))
+		cfg.AllowedOrigins = nil
+		cfg.TrustedProxies = nil
+		for _, cidr := range strings.Split(os.Getenv("CLAWMANAGER_TRUSTED_PROXY_CIDRS"), ",") {
+			if cidr = strings.TrimSpace(cidr); cidr != "" {
+				cfg.TrustedProxies = append(cfg.TrustedProxies, cidr)
+			}
+		}
+		backend, parseErr := url.Parse(cfg.BackendURL)
+		if parseErr != nil || backend.User != nil || backend.RawQuery != "" || backend.Fragment != "" || !(strings.HasSuffix(backend.Hostname(), ".svc.cluster.local") || strings.HasSuffix(backend.Hostname(), ".svc")) {
+			return Config{}, errors.New("Hermes Lite requires CLAWMANAGER_BACKEND_URL to use Kubernetes Service DNS")
+		}
+		repository, digest, hasDigest := strings.Cut(cfg.ImageRef, "@sha256:")
+		_, digestErr := hex.DecodeString(digest)
+		if !hasDigest || repository == "" || len(digest) != 64 || digestErr != nil || strings.ContainsAny(repository, " \t\n\r") {
+			return Config{}, errors.New("Hermes Lite requires an immutable CLAWMANAGER_RUNTIME_IMAGE_REF digest")
+		}
+	}
 	llmSettings, err := llmconfig.LoadFromEnv(llmconfig.ResolveOptions{})
 	if err != nil {
 		return Config{}, err
@@ -174,6 +196,9 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 
 	cfg.AgentEndpoint = "http://" + cfg.PodIP + ":" + strconv.Itoa(cfg.PublicPort)
+	if hermesProfile, ok := cfg.Runtime.(hermes.Profile); ok {
+		cfg.Runtime = hermesProfile.WithVerifiedCapabilities(cfg)
+	}
 	return cfg, nil
 }
 

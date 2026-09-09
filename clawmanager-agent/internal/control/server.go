@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,7 +33,7 @@ func NewControlHandler(cfg gateway.Config, manager *gateway.GatewayManager, repo
 		if manager.Draining() {
 			status = "draining"
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": status})
+		writeJSON(w, http.StatusOK, gateway.HealthResponse{Status: status, Capabilities: manager.HealthCapabilities()})
 	})
 
 	mux.HandleFunc("/v1/gateways", func(w http.ResponseWriter, r *http.Request) {
@@ -44,9 +45,24 @@ func NewControlHandler(cfg gateway.Config, manager *gateway.GatewayManager, repo
 			return
 		}
 		var req gateway.CreateGatewayRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body := r.Body
+		if manager.IsolatedGatewayLifecycle() {
+			body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
+		decoder := json.NewDecoder(body)
+		if manager.IsolatedGatewayLifecycle() {
+			decoder.DisallowUnknownFields()
+		}
+		if err := decoder.Decode(&req); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
+		}
+		if manager.IsolatedGatewayLifecycle() {
+			var extra any
+			if err := decoder.Decode(&extra); err != io.EOF {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
 		}
 		resp, err := manager.CreateGateway(r.Context(), req)
 		if err != nil {

@@ -1,0 +1,87 @@
+name: Verify Hermes Lite candidate
+
+on:
+  pull_request:
+    paths: ["hermes/**", "clawmanager-agent/**", ".gitattributes", ".github/workflows/hermes-lite-verify.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: clawmanager-agent/go.mod
+          cache-dependency-path: clawmanager-agent/go.sum
+      - name: Verify lock and boundary tests
+        run: |
+          python -m unittest discover -s hermes/tests -p 'test_lite_*.py'
+          python hermes/scripts/verify_lite_release.py --lock hermes/hermes-lite.lock.json --upstream \
+            --patch-root hermes/patches/hermes-agent --test-root hermes/tests --acceptance-root hermes/acceptance
+          cd clawmanager-agent
+          go test ./...
+          go test -race ./internal/gateway ./internal/runtime/hermes ./internal/agent ./cmd/clawmanager-agent
+      - uses: docker/setup-buildx-action@v3
+      - name: Run root-owned release fixtures in Linux
+        run: |
+          docker run --rm --user 0 \
+            --mount "type=bind,source=${PWD}/clawmanager-agent,target=/src,readonly" \
+            --workdir /src --env GOTOOLCHAIN=local \
+            golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 \
+            go test -race -count=1 ./internal/runtime/hermes ./internal/control
+      - name: Build candidate with SBOM and provenance (never publish)
+        run: |
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "BUILD_DATE=${BUILD_DATE}" >> "${GITHUB_ENV}"
+          docker buildx build --file hermes/Dockerfile.lite \
+            --platform linux/amd64 --sbom=true --provenance=mode=max \
+            --build-arg AGENT_REVISION="${GITHUB_SHA}" \
+            --build-arg AGENT_VERSION="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="${BUILD_DATE}" \
+            --metadata-file hermes-lite-build.json \
+            --output type=oci,dest=hermes-lite.oci.tar \
+            --tag agentsruntime-hermes-lite:verify .
+          python hermes/scripts/collect_lite_attestations.py \
+            --oci hermes-lite.oci.tar --metadata hermes-lite-build.json --output hermes-lite-attestations
+      - name: Verify executable in candidate image
+        run: |
+          # Keep the OCI artifact/attestations above. Classic Docker image stores
+          # cannot reliably load OCI archives, so reuse the cached build layers.
+          docker buildx build --file hermes/Dockerfile.lite --platform linux/amd64 \
+            --load --tag agentsruntime-hermes-lite:verify \
+            --build-arg AGENT_REVISION="${GITHUB_SHA}" \
+            --build-arg AGENT_VERSION="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="${BUILD_DATE}" .
+          docker run --rm --entrypoint python agentsruntime-hermes-lite:verify \
+            /usr/local/share/hermes-lite/verify_lite_release.py \
+            --lock /usr/local/share/hermes-lite/source-lock.json --runtime --verify-release
+      - name: Execute fixed candidate suites and preserve bound evidence
+        run: |
+          for suite in lite_image lite_provider lite_agent lite_non_native desktop_rpc; do
+            python hermes/scripts/run_release_check.py \
+              --image agentsruntime-hermes-lite:verify --metadata hermes-lite-build.json --oci hermes-lite.oci.tar \
+              --suite "${suite}" --output "hermes-lite-evidence/${suite}.json"
+          done
+          # Unbound local reports have binding_sha256=null. Only a separate
+          # controlled six-suite campaign may create a trusted signature.
+          # PR jobs receive no signing key or real browser credentials.
+          docker run --rm --network none --entrypoint python agentsruntime-hermes-lite:verify \
+            -c 'import json; assert json.load(open("/usr/local/share/hermes-lite/release.json"))["desktop_web_accepted"] is False'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hermes-lite-candidate-${{ github.sha }}
+          path: |
+            hermes-lite-build.json
+            hermes-lite.oci.tar
+            hermes-lite-evidence/
+            hermes-lite-attestations/
+          retention-days: 7

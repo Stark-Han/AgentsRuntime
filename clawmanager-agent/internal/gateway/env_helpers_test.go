@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -83,6 +84,9 @@ func TestLiteTeamBehaviorIsLimitedToSupportedRuntimes(t *testing.T) {
 }
 
 func TestHermesLiteTeamEnvironmentAndConfigMatchOpenClawContract(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Hermes Team workspace aliases require Unix symbolic links")
+	}
 	root := t.TempDir()
 	workspace := filepath.Join(root, "hermes", "user-1", "instance-2")
 	shared := filepath.Join(root, "teams", "user-1", "team-54-shared")

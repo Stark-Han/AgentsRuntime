@@ -87,6 +87,42 @@ type RuntimeProfile interface {
 	HealthChecker(cfg Config) GatewayHealthChecker
 }
 
+// HealthCapabilityProvider is optional; older runtime profiles need no changes.
+// Providers return a configuration/release snapshot, never probe user gateways.
+type HealthCapabilityProvider interface {
+	HealthCapabilities() *HealthCapabilities
+}
+
+type HealthResponse struct {
+	Status       string              `json:"status"`
+	Capabilities *HealthCapabilities `json:"capabilities,omitempty"`
+}
+
+type HealthCapabilities struct {
+	HermesDesktopWeb *HermesDesktopWebCapability `json:"hermes_desktop_web,omitempty"`
+}
+
+type HermesDesktopWebCapability struct {
+	ContractVersion   int    `json:"contract_version"`
+	Enabled           bool   `json:"enabled"`
+	HermesRef         string `json:"hermes_ref"`
+	HermesCommit      string `json:"hermes_commit"`
+	RPCProtocol       string `json:"rpc_protocol"`
+	BackendMode       string `json:"backend_mode"`
+	AuthMode          string `json:"auth_mode"`
+	ArtifactsVerified bool   `json:"artifacts_verified"`
+	ReleaseAccepted   bool   `json:"release_accepted"`
+	PayloadSHA256     string `json:"payload_sha256"`
+}
+
+func CloneHealthCapabilities(value *HealthCapabilities) *HealthCapabilities {
+	if value == nil || value.HermesDesktopWeb == nil {
+		return nil
+	}
+	desktop := *value.HermesDesktopWeb
+	return &HealthCapabilities{HermesDesktopWeb: &desktop}
+}
+
 type PortRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`

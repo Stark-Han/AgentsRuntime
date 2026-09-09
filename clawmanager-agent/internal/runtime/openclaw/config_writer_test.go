@@ -1128,6 +1128,9 @@ func TestWriteOpenClawGatewayConfigWritesLiteTeamConfigJSON(t *testing.T) {
 }
 
 func TestWriteOpenClawGatewayConfigEnablesRedisTeamForLiteTeam(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("OpenClaw Team workspace aliases require Unix symbolic links")
+	}
 	root := t.TempDir()
 	workspace := filepath.Join(root, "openclaw", "user-1", "instance-106")
 	sourcePlugin := filepath.Join(root, "defaults", ".openclaw", "extensions", "redis-team")
