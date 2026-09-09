@@ -35,6 +35,21 @@ func NewAgent(cfg Config) *Agent {
 func (a *Agent) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if a.manager.IsolatedGatewayLifecycle() {
+		if err := a.manager.Initialize(); err != nil {
+			return err
+		}
+		if err := a.manager.Health(); err != nil {
+			return err
+		}
+		defer func() {
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), a.cfg.ProcessStopTimeout+10*time.Second)
+			defer stopCancel()
+			_ = a.manager.Shutdown(stopCtx)
+			_ = a.reporter.ReportGateways(stopCtx, a.manager.GatewayReportPayload(a.currentPodID()))
+			_ = a.reporter.ReportHeartbeat(stopCtx, a.manager.HeartbeatPayload(a.currentPodID()))
+		}()
+	}
 
 	listener, err := net.Listen("tcp", a.cfg.ListenAddr)
 	if err != nil {
@@ -142,6 +157,9 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 }
 
 func (a *Agent) reportHeartbeat(ctx context.Context) {
+	if a.manager.IsolatedGatewayLifecycle() {
+		_ = a.manager.RefreshClock(ctx)
+	}
 	if err := a.ReportHeartbeat(ctx, a.manager.HeartbeatPayload(a.currentPodID())); err != nil {
 		log.Printf("runtime-agent heartbeat failed: %v", err)
 	}

@@ -18,7 +18,7 @@ The repository currently documents these runtime images:
 ## Repository layout
 
 - `hermes/`: Hermes runtime image, built from the repository root so it can include the shared `clawmanager-agent/`
-- `hermes-lite`: lite Hermes runtime image, built from the repository root with the Hermes Dockerfile
+- `hermes-lite`: headless Hermes Desktop Web candidate, built with `hermes/Dockerfile.lite`; see [release gates](hermes/HERMES-LITE-RELEASE.md) and [operations](hermes/HERMES-LITE-OPERATIONS.md)
 - `openclaw/`: OpenClaw runtime image, built from the repository root so it can include the shared `clawmanager-agent/`
 - `openclaw-lite`: lite OpenClaw runtime image, built from the repository root with `openclaw/Dockerfile.openclaw`
 - `openclaw-shell/`: Alpine-based OpenClaw shell runtime image, built from the repository root so it can reuse the OpenClaw agent implementation under `openclaw/`
@@ -47,7 +47,7 @@ docker build \
 
 ```bash
 docker build \
-  -f hermes/Dockerfile \
+  -f hermes/Dockerfile.lite \
   -t hermes-lite:local \
   .
 ```
@@ -152,14 +152,10 @@ docker buildx build \
 
 ### Hermes Lite
 
-```bash
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -f hermes/Dockerfile \
-  -t <registry>/hermes-lite:latest \
-  --push \
-  .
-```
+The separate headless candidate is verified by `hermes-lite-verify.yml`, which
+retains an OCI image, SBOM and provenance without publishing. Complete the
+[Hermes Lite release gates](hermes/HERMES-LITE-RELEASE.md) before publishing and
+deploying a tested immutable digest. Validate each target architecture separately.
 
 ### OpenClaw
 

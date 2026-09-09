@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+# The Lite image is a shared runtime pod, never a Pro instance agent.
+if [[ -z "${RUNTIME_AGENT_CONTROL_TOKEN:-}" || -z "${RUNTIME_AGENT_REPORT_TOKEN:-}" ]]; then
+    echo "Hermes Lite requires runtime control and report credentials" >&2
+    exit 64
+fi
+if [[ "${CLAWMANAGER_AGENT_ENABLED:-false}" == "true" ]]; then
+    echo "Hermes Lite does not accept Pro instance agent mode" >&2
+    exit 64
+fi
+mkdir -p "${RUNTIME_AGENT_DATA_DIR}" "${RUNTIME_WORKSPACE_ROOT}"
+exec /usr/local/bin/clawmanager-agent

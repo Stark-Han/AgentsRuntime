@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -521,6 +522,9 @@ func TestCreateGatewayReleasesFullPortBlockAfterStartupFailure(t *testing.T) {
 }
 
 func TestControlHandlerPassesRequestEnvironmentToGatewayProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Team workspace aliases require Unix symbolic links")
+	}
 	cfg := testConfig(t)
 	redisTeamPlugin := filepath.Join(t.TempDir(), "redis-team")
 	if err := os.MkdirAll(filepath.Join(redisTeamPlugin, "dist"), 0o755); err != nil {

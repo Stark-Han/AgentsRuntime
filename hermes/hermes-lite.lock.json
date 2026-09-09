@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/NousResearch/hermes-agent.git",
+  "tag": "v2026.8.31",
+  "tag_object": "6e8f8418e6378eb2617e4de074e13dedd091b8af",
+  "commit": "29112bef099274229cadff79cdff7bf7b99c4b77",
+  "package_version": "0.21.0",
+  "archive_url": "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/29112bef099274229cadff79cdff7bf7b99c4b77",
+  "archive_sha256": "76b99a8be9b77d66833c3cfe2b35c6d6f6a58e4ff9637ef8effcfc1f420ab35a",
+  "node_version": "22.23.2",
+  "node_packages": {
+    "package.json": "1.0.0",
+    "web/package.json": "0.0.0",
+    "apps/shared/package.json": "0.0.0",
+    "ui-tui/package.json": "0.0.1"
+  },
+  "source_sha256": {
+    "pyproject.toml": "c70c8b52f6cc08a4e65f0fc1713c26814fd4f19811bc7e01de645009b2a76600",
+    "hermes_cli/__init__.py": "fd84470016147d1ed16b8655a60fd5e5c118c26a1a9816d1276933d32c337ff5",
+    "uv.lock": "383cd8f98ec23dc3fe4cf63759ec73be5a869cc953f068b4e79ec4e8ed00287d",
+    "package.json": "8b5b2ea9721e8d4bdedea457f5b5bab038e7f3e11ea4e1381bd43f2e87ce04cd",
+    "package-lock.json": "83beeba3f6e7826312444c7b64067488afae9ed88ad7326ecef61ac235bab86d",
+    "web/package.json": "884fec6f6a1a3c4293be5192ed492a1aaac7acfe7cd9e6f8938ca5453d31a0e9",
+    "apps/shared/package.json": "61ee3dfa7d2097d9310732a3ab3554b25829c1802ed5120cdeb3d0574055be95",
+    "hermes_cli/web_server.py": "c56b2f4605f0858704463a4f8ed8f3e44b56bba0f53b0e1839c33a537b4b16f4",
+    "hermes_cli/runtime_provider.py": "955054a4ebac704dc7f8182dbe7431e03716d59bc80044c05da2bf8533590372",
+    "ui-tui/package.json": "4753204cb018d78f203e4d2c9c1a8ca6f710563052c86df3c41f718b840f5418",
+    "ui-tui/src/gatewayClient.ts": "86a0259975e1515d46d6e50939c2756dfbda135d585a5e03cd12c0763f4d4d2c",
+    "tui_gateway/server.py": "e264c1c7cc2e99051c1e36f4019dd29b739d5b7f1c61b8e364f87ad6039d1900",
+    "tui_gateway/methods_session.py": "c4c0b3355be3ecc7f7fdf8ebcbd46fb3f360f9dded5ca9908f96ed0ce7e561d0",
+    "model_tools.py": "5227bfe30f7c3f6eb20d064f648420138031e038d38eac2829d25b749739ad11",
+    "hermes_cli/env_loader.py": "26712ba3e020b5c306cd456e8d2cc96084fd2295f7ec4104466fffd0adeab87d",
+    "agent/tool_executor.py": "5aff6c7e95a280adc5124e7c1f1019b54984b8e7091db48bac35ad5bc2387813"
+  },
+  "verified_at": "2026-09-07",
+  "desktop_web_accepted": false,
+  "patch_sha256": {
+    "apply_lite_gateway_boundary.py": "d0c14033470fca76171d37621b9f411dad96b9acb5e3010745c52c0088a65194",
+    "apply_lite_non_native.py": "a7f7421cdfce468d69c2e8ff3e01a11ed58e34a8c1878060997f7f39c631d3ad",
+    "apply_lite_tool_executor.py": "ca1e4fa39710712dfa87a383ad3e8a943789b424808154a0b5545433aaeb8d2a",
+    "lite_environment.py": "b3ac25e2f81dc4f3efae8f5ef7627116becd72447264ff74f29f06b9898ea3d3",
+    "lite_gateway_boundary.py": "2425fec1d93a8c2cc98bda3d32d9f8623af1a253d4811930ce0decc41b374f7a",
+    "lite_non_native.py": "b2f92c336ddf005697ff7fac00ff621409549951bef03783d01857b53b16bfc2"
+  },
+  "test_sha256": {
+    "acceptance_model_stub.py": "03d03de09eb5164b7724e5f19ff66656667e547918601d0beebd805b17b48acc",
+    "check_lite_tool_executor.py": "e07a3c1e3af3873c49b4d7151f5875dad10565c823e31996e632c534ccdb1b0f",
+    "cm_bff_browser.mjs": "358b6df20f43ea39de69eea532df4366b8ed0f840657fc3abf83457c1f45f75f",
+    "smoke_lite_agent.py": "35ddbbf2b5e9e46720945739f60a94bf846c52d3616aca032245af1b1eeb20fd",
+    "smoke_lite_cm_bff_browser.py": "dc2da24236fc35f9717611cf7a86f7b8ab72cd2a999f241d6b5a404d9add277e",
+    "smoke_lite_desktop_rpc.py": "bb377c4a9f5854afd48d0526dca57501358879dcdc791f239d1c15c1339ca864",
+    "smoke_lite_image.py": "516352de9e0ca10836658234f745935929b7c0caadb73e0ed1de6cf45a38843b",
+    "smoke_lite_non_native.py": "6f13ccc46d07d52cf20252a28e82e0b5341bfd9c450aae72375d59248b0b8cf2",
+    "smoke_lite_provider.py": "ddc80471c029676e32d56139b0426b0c4d471e8b265599a22e28fb9201607a42"
+  },
+  "acceptance_sha256": {
+    "acceptance-protocol.json": "0ab55c5990e818f25851ed55b92f0cec4da4f899167b4020982e0b30872213ae",
+    "release-trust.json": "2478f0d3694d2fa0cf32e0f11a1a9ce95c5cc6b2a4041940bb33bdac82b00c7a"
+  }
+}

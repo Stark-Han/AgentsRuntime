@@ -1,0 +1,114 @@
+# syntax=docker/dockerfile:1.7
+# Separate shared Lite runtime. The Webtop/Pro Dockerfiles are intentionally independent.
+FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS agent-builder
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG AGENT_VERSION=dev
+WORKDIR /src/clawmanager-agent
+COPY clawmanager-agent/ ./
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w -X main.version=${AGENT_VERSION}" \
+    -o /out/clawmanager-agent ./cmd/clawmanager-agent
+
+FROM ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 AS uv
+FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e AS source
+COPY hermes/hermes-lite.lock.json /usr/local/share/hermes-lite/source-lock.json
+COPY hermes/scripts/verify_lite_release.py /usr/local/share/hermes-lite/verify_lite_release.py
+COPY hermes/scripts/campaign_evidence.py /usr/local/share/hermes-lite/campaign_evidence.py
+RUN python /usr/local/share/hermes-lite/verify_lite_release.py \
+    --lock /usr/local/share/hermes-lite/source-lock.json --download /opt/hermes-agent
+
+FROM source AS patched-source
+COPY hermes/patches/hermes-agent/apply_lite_gateway_boundary.py /tmp/lite-patch/
+COPY hermes/patches/hermes-agent/lite_gateway_boundary.py /tmp/lite-patch/
+COPY hermes/patches/hermes-agent/apply_lite_non_native.py /tmp/lite-patch/
+COPY hermes/patches/hermes-agent/lite_non_native.py /tmp/lite-patch/
+COPY hermes/patches/hermes-agent/lite_environment.py /tmp/lite-patch/
+COPY hermes/patches/hermes-agent/apply_lite_tool_executor.py /tmp/lite-patch/
+RUN python /usr/local/share/hermes-lite/verify_lite_release.py \
+       --lock /usr/local/share/hermes-lite/source-lock.json --patch-root /tmp/lite-patch \
+    && python /tmp/lite-patch/apply_lite_gateway_boundary.py /opt/hermes-agent \
+    && python /tmp/lite-patch/apply_lite_non_native.py /opt/hermes-agent \
+    && python /tmp/lite-patch/apply_lite_tool_executor.py /opt/hermes-agent \
+    && rm -rf /tmp/lite-patch
+
+FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS dashboard-builder
+WORKDIR /opt/hermes-agent
+COPY --from=patched-source /opt/hermes-agent/ ./
+# Classic Dashboard uses a fixed prebuilt Hermes TUI for its chat terminal.
+# No Electron/Desktop workspace or runtime node_modules is included.
+RUN npm ci --workspace web --workspace ui-tui --include-workspace-root=false --ignore-scripts --no-audit --no-fund \
+    && npm run build --workspace web \
+    && npm run build --workspace ui-tui \
+    && test -f hermes_cli/web_dist/index.html \
+    && test -f ui-tui/dist/entry.js \
+    && mkdir -p /third-party-notices \
+    && find node_modules -type f \( -iname 'license*' -o -iname 'notice*' -o -iname 'copying*' \) \
+       -exec cp --parents '{}' /third-party-notices/ \;
+# Bundled Web/TUI dependencies are invisible to a final-filesystem-only scan.
+ARG BUILDKIT_SBOM_SCAN_STAGE=true
+
+FROM patched-source AS python-builder
+COPY --from=uv /uv /usr/local/bin/uv
+ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
+WORKDIR /opt/hermes-agent
+# Hermes requires editable source installs to retain its bundled assets.
+RUN uv sync --locked --no-dev --extra web --python /usr/local/bin/python3
+RUN rm -rf /opt/hermes-agent/apps /opt/hermes-agent/web /opt/hermes-agent/ui-tui \
+       /opt/hermes-agent/tests /opt/hermes-agent/tests-js /opt/hermes-agent/docs \
+       /opt/hermes-agent/.github /root/.cache /tmp/lite-patch
+
+FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e
+ARG HERMES_VERSION=0.21.0
+ARG HERMES_GIT_REF=v2026.8.31
+ARG HERMES_GIT_COMMIT=29112bef099274229cadff79cdff7bf7b99c4b77
+ARG AGENT_REVISION=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="Hermes Lite" \
+    org.opencontainers.image.revision=${AGENT_REVISION} \
+    org.opencontainers.image.created=${BUILD_DATE} \
+    org.opencontainers.image.licenses="MIT" \
+    io.clawmanager.hermes.tag=${HERMES_GIT_REF} \
+    io.clawmanager.hermes.commit=${HERMES_GIT_COMMIT} \
+    io.clawmanager.hermes.version=${HERMES_VERSION} \
+    io.clawmanager.hermes.patch="lite-gateway-boundary-v1,lite-non-native-v1"
+ENV PATH=/opt/hermes-agent/.venv/bin:/usr/local/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    HERMES_VERSION=${HERMES_VERSION} HERMES_GIT_REF=${HERMES_GIT_REF} HERMES_GIT_COMMIT=${HERMES_GIT_COMMIT} \
+    CLAWMANAGER_RUNTIME_TYPE=hermes CLAWMANAGER_HERMES_DESKTOP_WEB_ENABLED=true \
+    CLAWMANAGER_HERMES_BACKEND_MODE=dashboard \
+    RUNTIME_WORKSPACE_ROOT=/workspaces RUNTIME_AGENT_DATA_DIR=/var/lib/clawmanager-agent \
+    RUNTIME_AGENT_LISTEN_ADDR=0.0.0.0:19090 \
+    RUNTIME_GATEWAY_PORT_START=20000 RUNTIME_GATEWAY_PORT_END=20299 \
+    RUNTIME_GATEWAY_PORT_BLOCK_SIZE=1 RUNTIME_GATEWAY_CAPACITY=100
+RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep tini \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=python-builder /opt/hermes-agent/ /opt/hermes-agent/
+COPY --from=dashboard-builder /opt/hermes-agent/hermes_cli/web_dist/ /opt/hermes-agent/hermes_cli/web_dist/
+COPY --from=dashboard-builder /opt/hermes-agent/ui-tui/dist/entry.js /opt/hermes-agent/hermes_cli/tui_dist/entry.js
+COPY --from=dashboard-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=dashboard-builder /usr/local/LICENSE /usr/local/share/licenses/node/LICENSE
+COPY --from=dashboard-builder /third-party-notices/ /usr/local/share/licenses/hermes-dashboard/
+COPY --from=agent-builder /out/clawmanager-agent /usr/local/bin/clawmanager-agent
+COPY --from=source /usr/local/share/hermes-lite/ /usr/local/share/hermes-lite/
+COPY hermes/scripts/run_release_check.py /usr/local/share/hermes-lite/run_release_check.py
+COPY hermes/scripts/run_campaign.py hermes/scripts/campaign_signing.py hermes/scripts/verify_lite_promotion_oci.py hermes/scripts/verify_campaign_signature.mjs /usr/local/share/hermes-lite/
+COPY hermes/acceptance/release-trust.json hermes/acceptance/acceptance-protocol.json /usr/local/share/hermes-lite/
+COPY hermes/patches/hermes-agent/apply_lite_gateway_boundary.py hermes/patches/hermes-agent/lite_gateway_boundary.py hermes/patches/hermes-agent/apply_lite_non_native.py hermes/patches/hermes-agent/lite_non_native.py hermes/patches/hermes-agent/lite_environment.py hermes/patches/hermes-agent/apply_lite_tool_executor.py /usr/local/share/hermes-lite/patches/
+COPY hermes/tests/smoke_lite_image.py hermes/tests/smoke_lite_provider.py hermes/tests/smoke_lite_agent.py hermes/tests/smoke_lite_non_native.py hermes/tests/smoke_lite_desktop_rpc.py hermes/tests/smoke_lite_cm_bff_browser.py hermes/tests/check_lite_tool_executor.py /usr/local/share/hermes-lite/tests/
+COPY hermes/tests/cm_bff_browser.mjs hermes/tests/acceptance_model_stub.py /usr/local/share/hermes-lite/tests/
+COPY hermes/rootfs/usr/local/bin/start-hermes-lite-dashboard /usr/local/bin/start-hermes-lite-dashboard
+COPY hermes/scripts/hermes-lite-entrypoint /usr/local/bin/hermes-lite-entrypoint
+RUN python -c 'import json,os; p=json.load(open("/usr/local/share/hermes-lite/source-lock.json")); assert (os.environ["HERMES_VERSION"],os.environ["HERMES_GIT_REF"],os.environ["HERMES_GIT_COMMIT"]) == (p["package_version"],p["tag"],p["commit"]), "release build args must match lock"' \
+    && sed -i 's/\r$//' /usr/local/bin/start-hermes-lite-dashboard /usr/local/bin/hermes-lite-entrypoint \
+    && chmod 0755 /usr/local/bin/start-hermes-lite-dashboard /usr/local/bin/hermes-lite-entrypoint \
+    && mkdir -p /workspaces /var/lib/clawmanager-agent /usr/local/share/licenses/hermes-agent \
+    && cp /opt/hermes-agent/LICENSE /usr/local/share/licenses/hermes-agent/LICENSE \
+    && python /usr/local/share/hermes-lite/verify_lite_release.py --lock /usr/local/share/hermes-lite/source-lock.json \
+       --runtime --patch-root /usr/local/share/hermes-lite/patches --test-root /usr/local/share/hermes-lite/tests --acceptance-root /usr/local/share/hermes-lite \
+    && rm -f /opt/hermes-agent/.venv/.lock \
+    && rm -rf /root/.cache /root/.hermes /tmp/* \
+    && python /usr/local/share/hermes-lite/verify_lite_release.py --lock /usr/local/share/hermes-lite/source-lock.json --generate-release --verify-release
+EXPOSE 19090
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hermes-lite-entrypoint"]

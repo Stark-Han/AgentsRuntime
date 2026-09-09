@@ -60,6 +60,9 @@ func newHealthChecker(cfg gateway.Config) gateway.GatewayHealthChecker {
 }
 
 func (h *healthChecker) WaitReady(ctx context.Context, spec gateway.GatewayStartSpec) error {
+	if truthy(envValue(spec.Env, "CLAWMANAGER_HERMES_DESKTOP_WEB_ENABLED")) {
+		return h.waitDashboardReady(ctx, spec)
+	}
 	expectation, required, err := teamStartupExpectationFor(spec)
 	if err != nil {
 		return err

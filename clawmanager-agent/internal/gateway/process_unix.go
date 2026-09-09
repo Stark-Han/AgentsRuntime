@@ -33,17 +33,22 @@ func stopGatewayCommand(ctx context.Context, cmd *exec.Cmd, done <-chan error, t
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
 		return ctx.Err()
-	case err := <-done:
-		return err
+	case <-done:
+		// The group can outlive its leader. A successful wait alone does not
+		// prove that inherited listeners or tool subprocesses have stopped.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return nil
 	case <-timer.C:
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Process.Kill()
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-done:
-			return err
+		case <-done:
+			return nil
 		case <-time.After(5 * time.Second):
 			return errors.New("gateway did not exit after kill")
 		}

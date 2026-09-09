@@ -14,20 +14,29 @@ import (
 )
 
 type gatewayRecord struct {
-	state   GatewayState
-	process ManagedProcess
+	state    GatewayState
+	process  ManagedProcess
+	cancel   context.CancelFunc
+	finished chan struct{}
+	reserved bool
+	stopMu   sync.Mutex
 }
 
 type GatewayManager struct {
-	cfg     Config
-	starter ProcessStarter
-	ports   *PortAllocator
-	health  GatewayHealthChecker
+	cfg          Config
+	starter      ProcessStarter
+	ports        *PortAllocator
+	health       GatewayHealthChecker
+	capabilities *HealthCapabilities
 
-	mu       sync.RWMutex
-	draining bool
-	gateways map[string]*gatewayRecord
-	changes  chan struct{}
+	mu             sync.RWMutex
+	draining       bool
+	gateways       map[string]*gatewayRecord
+	changes        chan struct{}
+	clockRequired  bool
+	clockCheckedAt time.Time
+	clockLastGood  time.Time
+	clockIssue     string
 }
 
 func NewGatewayManager(cfg Config, starter ProcessStarter, ports *PortAllocator) *GatewayManager {
@@ -46,14 +55,24 @@ func NewGatewayManager(cfg Config, starter ProcessStarter, ports *PortAllocator)
 	if cfg.GatewayPortBlockSize > 0 {
 		ports.SetBlockSize(cfg.GatewayPortBlockSize)
 	}
-	return &GatewayManager{
-		cfg:      cfg,
-		starter:  starter,
-		ports:    ports,
-		health:   health,
-		gateways: map[string]*gatewayRecord{},
-		changes:  make(chan struct{}, 1),
+	var capabilities *HealthCapabilities
+	if provider, ok := runtimeProfile(cfg).(HealthCapabilityProvider); ok {
+		capabilities = CloneHealthCapabilities(provider.HealthCapabilities())
 	}
+	return &GatewayManager{
+		cfg:          cfg,
+		starter:      starter,
+		ports:        ports,
+		health:       health,
+		gateways:     map[string]*gatewayRecord{},
+		changes:      make(chan struct{}, 1),
+		capabilities: capabilities,
+	}
+}
+
+// HealthCapabilities returns a copy of the immutable startup snapshot.
+func (m *GatewayManager) HealthCapabilities() *HealthCapabilities {
+	return CloneHealthCapabilities(m.capabilities)
 }
 
 func (m *GatewayManager) SetHealthChecker(health GatewayHealthChecker) {
@@ -66,6 +85,9 @@ func (m *GatewayManager) SetHealthChecker(health GatewayHealthChecker) {
 }
 
 func (m *GatewayManager) CreateGateway(_ context.Context, req CreateGatewayRequest) (CreateGatewayResponse, error) {
+	if m.IsolatedGatewayLifecycle() {
+		return m.createIsolatedGateway(req)
+	}
 	if strings.ToLower(strings.TrimSpace(req.AgentType)) != m.cfg.RuntimeType {
 		return CreateGatewayResponse{}, ErrRuntimeType
 	}
@@ -283,6 +305,9 @@ func createGatewayResponse(state GatewayState) CreateGatewayResponse {
 }
 
 func (m *GatewayManager) DeleteGateway(ctx context.Context, gatewayID string) error {
+	if m.IsolatedGatewayLifecycle() {
+		return m.deleteIsolatedGateway(ctx, gatewayID)
+	}
 	m.mu.Lock()
 	process := m.detachGatewayLocked(gatewayID)
 	m.mu.Unlock()
@@ -316,7 +341,11 @@ func (m *GatewayManager) GatewayStates() []GatewayState {
 
 	states := make([]GatewayState, 0, len(m.gateways))
 	for _, record := range m.gateways {
-		states = append(states, record.state)
+		state := record.state
+		if m.clockRequired && m.clockIssue != "" && (state.State == "running" || state.State == "starting") {
+			state.State, state.ErrorMessage = "unhealthy", m.clockIssue
+		}
+		states = append(states, state)
 	}
 	return states
 }
@@ -326,11 +355,28 @@ func (m *GatewayManager) GatewayStateChanges() <-chan struct{} {
 }
 
 func (m *GatewayManager) Health() error {
+	m.mu.RLock()
+	clockIssue := m.clockIssue
+	m.mu.RUnlock()
+	if clockIssue != "" {
+		return fmt.Errorf("%s", clockIssue)
+	}
 	if m.cfg.WorkspaceRoot == "" {
 		return fmt.Errorf("workspace root is empty")
 	}
 	if err := os.MkdirAll(m.cfg.WorkspaceRoot, 0o755); err != nil {
 		return fmt.Errorf("workspace root unavailable: %w", err)
+	}
+	if m.IsolatedGatewayLifecycle() {
+		if m.cfg.GatewayPortStart < 1 || m.cfg.GatewayPortEnd > 65535 || m.cfg.GatewayPortEnd < m.cfg.GatewayPortStart || m.cfg.GatewayPortBlockSize > 1 {
+			return fmt.Errorf("port_conflict: invalid configured pool")
+		}
+		file, err := os.CreateTemp(m.cfg.WorkspaceRoot, ".runtime-health-*")
+		if err != nil {
+			return fmt.Errorf("workspace_unavailable")
+		}
+		file.Close()
+		_ = os.Remove(file.Name())
 	}
 	return nil
 }
@@ -351,6 +397,9 @@ func (m *GatewayManager) HeartbeatPayload(podID int) HeartbeatPayload {
 	defer m.mu.RUnlock()
 
 	state := "ready"
+	if m.clockRequired && m.clockIssue != "" {
+		state = "error"
+	}
 	if m.draining {
 		state = "draining"
 	}
@@ -374,6 +423,9 @@ func (m *GatewayManager) RegisterPayload() RegisterPayload {
 	defer m.mu.RUnlock()
 
 	state := "ready"
+	if m.clockRequired && m.clockIssue != "" {
+		state = "error"
+	}
 	if m.draining {
 		state = "draining"
 	}
@@ -690,28 +742,62 @@ func (s *ExecProcessStarter) StartGateway(ctx context.Context, spec GatewayStart
 	cmd.Dir = spec.WorkspacePath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if p, ok := s.cfg.Runtime.(interface{ IsolatedGatewayLifecycle() bool }); ok && p.IsolatedGatewayLifecycle() {
+		// Third-party output can contain newly minted session tokens that are
+		// impossible to redact by an environment-value allowlist. Only emit
+		// structured lifecycle diagnostics until upstream logging is audited.
+		sink := &isolatedProcessLog{instanceID: spec.InstanceID, generation: spec.Generation}
+		cmd.Stdout, cmd.Stderr = sink, sink
+	}
 	configureGatewayCommand(cmd, spec.UID, spec.GID)
 
 	if err := cmd.Start(); err != nil {
 		return ManagedProcess{}, err
 	}
+	var cleanup func()
 	done := make(chan error, 1)
 	notifyDone := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
 		done <- err
 		notifyDone <- err
+		close(done)
+		close(notifyDone)
 	}()
+	var stopMu sync.Mutex
+	stopped := false
 
-	return ManagedProcess{
+	process := ManagedProcess{
 		PID:  cmd.Process.Pid,
 		Done: notifyDone,
 		Stop: func(stopCtx context.Context) error {
+			stopMu.Lock()
+			defer stopMu.Unlock()
+			if stopped {
+				return nil
+			}
 			timeout := s.cfg.ProcessStopTimeout
 			if timeout <= 0 {
 				timeout = 20 * time.Second
 			}
-			return stopGatewayCommand(stopCtx, cmd, done, timeout)
+			err := stopGatewayCommand(stopCtx, cmd, done, timeout)
+			if err == nil {
+				stopped = true
+				if cleanup != nil {
+					cleanup()
+				}
+			}
+			return err
 		},
-	}, nil
+	}
+	if p, ok := s.cfg.Runtime.(interface{ IsolatedGatewayLifecycle() bool }); ok && p.IsolatedGatewayLifecycle() {
+		var err error
+		cleanup, err = recordIsolatedProcess(s.cfg, spec, cmd.Process.Pid)
+		if err != nil {
+			// Keep a live stop handle even when durable metadata failed. The
+			// isolated lifecycle owns cleanup and retains its lease on failure.
+			return process, fmt.Errorf("workspace_unavailable: process metadata could not be recorded")
+		}
+	}
+	return process, nil
 }

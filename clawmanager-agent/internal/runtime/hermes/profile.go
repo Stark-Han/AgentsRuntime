@@ -11,16 +11,20 @@ import (
 )
 
 type Profile struct {
-	runtimeType string
+	runtimeType  string
+	desktopWeb   bool
+	capabilities *gateway.HealthCapabilities
 }
 
 func NewProfile(runtimeType string) Profile {
-	return Profile{runtimeType: strings.ToLower(strings.TrimSpace(runtimeType))}
+	return Profile{runtimeType: strings.ToLower(strings.TrimSpace(runtimeType)), desktopWeb: desktopWebEnabled()}
 }
 
 func (p Profile) Type() string {
 	return p.runtimeType
 }
+
+func (p Profile) IsolatedGatewayLifecycle() bool { return p.desktopWeb }
 
 func (p Profile) DisplayName() string {
 	return "Hermes"
@@ -40,10 +44,16 @@ func (p Profile) Defaults() gateway.RuntimeDefaults {
 }
 
 func (p Profile) GatewayCommand(string) []string {
+	if p.desktopWeb {
+		return []string{"start-hermes-lite-dashboard"}
+	}
 	return []string{"start-hermes-dashboard-gateway"}
 }
 
 func (p Profile) GatewayEnv(base []string, cfg gateway.Config, req gateway.CreateGatewayRequest, workspacePath string, port int) []string {
+	if p.desktopWeb {
+		return desktopWebEnvironment(base, cfg, req, workspacePath, port)
+	}
 	env := append([]string(nil), base...)
 	env = gateway.ApplyRequestEnvironment(env, req)
 	env = gateway.ApplyLiteTeamConfigEnvironment(env, req, workspacePath)
@@ -68,6 +78,7 @@ func (p Profile) GatewayEnv(base []string, cfg gateway.Config, req gateway.Creat
 	env = applyDashboardBasicAuthEnv(env, cfg, req)
 	env = unsetEnv(
 		env,
+		desktopWebFlag,
 		"RUNTIME_AGENT_CONTROL_TOKEN",
 		"RUNTIME_AGENT_REPORT_TOKEN",
 		"RUNTIME_AGENT_DATA_DIR",
@@ -129,6 +140,12 @@ func applyDashboardBasicAuthEnv(env []string, cfg gateway.Config, req gateway.Cr
 }
 
 func (p Profile) PrepareWorkspace(cfg gateway.Config, req gateway.CreateGatewayRequest, workspacePath string) error {
+	if p.desktopWeb {
+		if err := validateDesktopWebRequest(cfg, req); err != nil {
+			return err
+		}
+		return prepareDesktopWebWorkspace(cfg, req, workspacePath)
+	}
 	prepared, err := gateway.PrepareWorkspace(cfg.WorkspaceRoot, cfg.RuntimeType, req)
 	if err != nil {
 		return err

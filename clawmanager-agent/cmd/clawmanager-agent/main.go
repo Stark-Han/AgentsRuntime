@@ -12,6 +12,7 @@ import (
 
 	runtimeagent "github.com/iamlovingit/clawmanager-agent/internal/agent"
 	"github.com/iamlovingit/clawmanager-agent/internal/dshproxy"
+	"github.com/iamlovingit/clawmanager-agent/internal/gateway"
 	"github.com/iamlovingit/clawmanager-agent/internal/instanceagent"
 )
 
@@ -26,6 +27,15 @@ const (
 )
 
 func main() {
+	if handled, err := gateway.RunListenerProbe(os.Args[1:]); handled {
+		if err != nil {
+			// Never print arguments or /proc details from the instance-UID
+			// helper. Its caller reports the corresponding safe error category.
+			_, _ = os.Stderr.WriteString("managed_listener_verification_failed\n")
+			os.Exit(2)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "llm-config" {
 		if err := runLLMConfigCommand(os.Args[2:], os.Stdout); err != nil {
 			log.Printf("render LLM config: %v", err)

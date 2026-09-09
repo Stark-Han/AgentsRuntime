@@ -2,3 +2,17 @@
 deepseek-harness/scripts/* text eol=lf
 hermes/rootfs/usr/local/bin/hermes-apply-runtime-config text eol=lf
 hermes/rootfs/usr/local/bin/start-hermes-dashboard-gateway text eol=lf
+hermes/rootfs/usr/local/bin/start-hermes-lite-dashboard text eol=lf
+hermes/scripts/hermes-lite-entrypoint text eol=lf
+hermes/scripts/*lite*.py text eol=lf
+hermes/scripts/run_release_check.py text eol=lf
+hermes/scripts/*campaign*.py text eol=lf
+hermes/scripts/*campaign*.mjs text eol=lf
+hermes/tests/cm_bff_browser.mjs text eol=lf
+hermes/tests/acceptance_model_stub.py text eol=lf
+hermes/acceptance/*.json text eol=lf
+hermes/acceptance/*.pem text eol=lf
+hermes/patches/hermes-agent/*lite*.py text eol=lf
+hermes/tests/*lite*.py text eol=lf
+hermes/hermes-lite.lock.json text eol=lf
+hermes/Dockerfile.lite* text eol=lf

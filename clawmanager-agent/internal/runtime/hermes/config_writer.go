@@ -19,6 +19,9 @@ const managedConfigStart = "# clawmanager-managed-start"
 const managedConfigEnd = "# clawmanager-managed-end"
 
 func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, workspacePath string) error {
+	if desktopWebEnabled() {
+		return writeDesktopWebConfig(cfg, req, workspacePath)
+	}
 	if err := gateway.WriteLiteTeamConfigJSON(req, workspacePath); err != nil {
 		return err
 	}
