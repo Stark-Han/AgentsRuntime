@@ -63,6 +63,7 @@ one JavaScript file and needs no runtime node_modules. SBOM generation additiona
 scans the Dashboard build stage so bundled npm dependencies remain inventoried.
 
 ```bash
+python -m pip install --requirement hermes/tests/requirements.txt
 python -m unittest discover -s hermes/tests -p 'test_lite_*.py'
 python hermes/scripts/verify_lite_release.py \
   --lock hermes/hermes-lite.lock.json --upstream
@@ -76,14 +77,12 @@ docker buildx build --file hermes/Dockerfile.lite \
   --tag agentsruntime-hermes-lite:candidate .
 ```
 
-The dedicated `hermes-lite-verify.yml` workflow performs lock/tag verification,
-tests, an actual image build, CLI/Node version verification, real image protocol
-smoke (login, identity, WS ping/ticket replay/Origin, fixed TUI and fallback HTML),
-offline provider resolution against real saved credential pools, shared-agent
-lifecycle smoke, and retains an OCI
-archive containing BuildKit SBOM/provenance plus build metadata. It has no push
-or deployment step. Promote only a tested digest after all gates pass. For an
-arm64 deployment, build and test that architecture separately before promotion.
+The unified `docker-ghcr.yml` matrix builds and publishes Hermes Lite from
+`hermes/Dockerfile.lite` together with every other Pro and Lite runtime image.
+The Dockerfile verifies the locked upstream source, reviewed patches, test
+artifacts and generated release metadata while building. Run the host-side tests
+and fixed candidate suites described here before deploying a published digest.
+For an arm64 deployment, test that architecture separately before promotion.
 
 ## Managed release evidence
 

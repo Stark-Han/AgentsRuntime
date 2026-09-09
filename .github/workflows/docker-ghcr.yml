@@ -63,8 +63,7 @@ jobs:
 
           specs=(
             "hermes|.|./hermes/Dockerfile|hermes"
-            # Hermes Lite now has a separate headless candidate. Its verification
-            # workflow retains an OCI image/SBOM; publication waits for BFF gates.
+            "hermes-lite|.|./hermes/Dockerfile.lite|hermes-lite"
             "openclaw|.|./openclaw/Dockerfile.openclaw|openclaw"
             "openclaw-lite|.|./openclaw/Dockerfile.openclaw|openclaw-lite"
             "openclaw-shell|.|./openclaw-shell/Dockerfile|openclaw-shell"

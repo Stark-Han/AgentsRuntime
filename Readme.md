@@ -36,6 +36,10 @@ You can build each runtime image directly with Docker from the repository root.
 
 ### Hermes
 
+The Pro image pins Hermes Agent `0.21.0` (`v2026.8.31`) and opens the native
+Hermes Desktop application inside Webtop. The former terminal and Web Dashboard
+autostart paths are not included in the Pro image.
+
 ```bash
 docker build \
   -f hermes/Dockerfile \
@@ -152,9 +156,9 @@ docker buildx build \
 
 ### Hermes Lite
 
-The separate headless candidate is verified by `hermes-lite-verify.yml`, which
-retains an OCI image, SBOM and provenance without publishing. Complete the
-[Hermes Lite release gates](hermes/HERMES-LITE-RELEASE.md) before publishing and
+The unified `docker-ghcr.yml` image matrix builds and publishes Hermes Lite with
+`hermes/Dockerfile.lite`, alongside the other Pro and Lite runtime images.
+Complete the [Hermes Lite release gates](hermes/HERMES-LITE-RELEASE.md) before
 deploying a tested immutable digest. Validate each target architecture separately.
 
 ### OpenClaw

@@ -206,7 +206,7 @@ func TestHermesManagerUsesAdjacentRequestedSinglePorts(t *testing.T) {
 	cfg.GatewayPortStart = 20000
 	cfg.GatewayPortEnd = 20003
 	cfg.GatewayPortBlockSize = 1
-	cfg.GatewayCommand = []string{"start-hermes-dashboard-gateway"}
+	cfg.GatewayCommand = []string{"start-hermes-desktop"}
 	starter := &fakeStarter{nextPID: 4242}
 	mgr := NewGatewayManager(cfg, starter, NewPortAllocator(func(int) bool { return false }))
 

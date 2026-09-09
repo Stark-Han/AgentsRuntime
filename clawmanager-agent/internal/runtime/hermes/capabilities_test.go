@@ -28,7 +28,7 @@ func TestDesktopCapabilityRequiresManagedConfiguration(t *testing.T) {
 		{"missing proxy", func(c *gateway.Config) { c.TrustedProxies = nil }},
 		{"unbounded proxy", func(c *gateway.Config) { c.TrustedProxies = []string{"0.0.0.0/0"} }},
 		{"unmanaged command", func(c *gateway.Config) { c.GatewayCommand = []string{"sh", "-c", "unverified"} }},
-		{"legacy Pro command", func(c *gateway.Config) { c.GatewayCommand = []string{"start-hermes-dashboard-gateway"} }},
+		{"Pro Desktop command", func(c *gateway.Config) { c.GatewayCommand = []string{"start-hermes-desktop"} }},
 		{"legacy Team command", func(c *gateway.Config) { c.GatewayCommand = []string{"start-hermes-gateway"} }},
 		{"non Hermes", func(c *gateway.Config) { c.RuntimeType = "openclaw" }},
 		{"multiple ports", func(c *gateway.Config) { c.GatewayPortBlockSize = 5 }},

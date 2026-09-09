@@ -13,12 +13,12 @@ from pathlib import Path
 
 
 MARKER = "clawmanager-team-completion-stop-v1"
-ANCHOR = """                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
-
-                if agent._tool_guardrail_halt_decision is not None:
+ANCHOR = """                if agent._tool_guardrail_halt_decision is not None:
 """
-REPLACEMENT = """                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
-
+REPLACEMENT = """                # The pinned Hermes release persists every tool result before
+                # control returns here. Keep this ClawManager-specific stop
+                # decision after that persistence boundary and before generic
+                # tool guardrail handling.
                 # clawmanager-team-completion-stop-v1
                 # An accepted explicit Team completion is already durable in
                 # ClawManager. Do not spend another model iteration asking the
@@ -66,7 +66,7 @@ def main() -> int:
         return 0
     count = source.count(ANCHOR)
     if count != 1:
-        raise RuntimeError(f"expected exactly one Hermes tool-loop anchor, found {count}")
+        raise RuntimeError(f"expected exactly one Hermes post-tool guardrail anchor, found {count}")
     target.write_text(source.replace(ANCHOR, REPLACEMENT), encoding="utf-8")
     return 0
 

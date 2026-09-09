@@ -130,7 +130,7 @@ func TestLoadConfigFromEnvUsesHermesProfile(t *testing.T) {
 	if cfg.GatewayPortBlockSize != 1 {
 		t.Fatalf("GatewayPortBlockSize = %d, want 1", cfg.GatewayPortBlockSize)
 	}
-	wantCommand := []string{"start-hermes-dashboard-gateway"}
+	wantCommand := []string{"start-hermes-desktop"}
 	if !stringSlicesEqual(cfg.GatewayCommand, wantCommand) {
 		t.Fatalf("GatewayCommand = %#v, want %#v", cfg.GatewayCommand, wantCommand)
 	}
