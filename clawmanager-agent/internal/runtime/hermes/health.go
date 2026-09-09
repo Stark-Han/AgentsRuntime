@@ -81,7 +81,7 @@ func (h *healthChecker) WaitReady(ctx context.Context, spec gateway.GatewayStart
 	results := make(chan componentHealthResult, 2)
 	go func() {
 		results <- componentHealthResult{
-			component: "Hermes dashboard",
+			component: "Hermes runtime",
 			err:       h.http.WaitReady(readyCtx, spec),
 		}
 	}()

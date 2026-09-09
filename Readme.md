@@ -36,6 +36,10 @@ You can build each runtime image directly with Docker from the repository root.
 
 ### Hermes
 
+The Pro image pins Hermes Agent `0.21.0` (`v2026.8.31`) and opens the native
+Hermes Desktop application inside Webtop. The former terminal and Web Dashboard
+autostart paths are not included in the Pro image.
+
 ```bash
 docker build \
   -f hermes/Dockerfile \
