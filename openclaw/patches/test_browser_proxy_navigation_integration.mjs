@@ -14,9 +14,14 @@ if (!chromium) throw new Error("Chromium is required for the managed Preview int
 const proxyPort = 18080;
 const cdpPort = 19222;
 const previewUrl = "http://p-abcdefghijklmnop.clawmanager-team-preview.invalid/v2/interactive/test/index.html";
+const dnsContainmentUrl = "http://p-abcdefghijklmnop.clawmanager-team-preview.invalid/v2/interactive/test/dns-contained.html";
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-preview-profile-"));
 const proxy = http.createServer((req, res) => {
   res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+  if (String(req.url).includes("dns-contained.html")) {
+    res.end("<!doctype html><title>DNS containment</title><h1>main document survived</h1><iframe src='http://rt.openclaw-dns-failure.invalid/tracker'></iframe>");
+    return;
+  }
   res.end("<!doctype html><title>Managed Preview</title><button id=inc>increment</button><output id=value>0</output><script>inc.onclick=()=>value.textContent=String(Number(value.textContent)+1)</script>");
 });
 
@@ -38,6 +43,9 @@ const browser = spawn(chromium, [
 ], { stdio: ["ignore", "ignore", "pipe"] });
 
 try {
+	const unhandled = [];
+	const onUnhandled = (reason) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
   const cdpUrl = `http://127.0.0.1:${cdpPort}`;
   let ready = false;
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -98,6 +106,19 @@ try {
     action: { kind: "evaluate", fn: "() => Number(document.querySelector('#value').textContent)" },
   });
   assert.equal(after.result, 1);
+
+  const dnsPage = await pw.createPageViaPlaywright({
+    cdpUrl,
+    url: dnsContainmentUrl,
+    ssrfPolicy,
+    browserProxyMode: "explicit-browser-proxy",
+  });
+  assert.equal(dnsPage.url, dnsContainmentUrl);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(unhandled.length, 0, `subframe DNS failure escaped the request boundary: ${unhandled}`);
+  const dnsSnapshot = await pw.snapshotAiViaPlaywright({ cdpUrl, targetId: dnsPage.targetId, ssrfPolicy, browserProxyMode: "explicit-browser-proxy" });
+  assert.match(JSON.stringify(dnsSnapshot), /main document survived/i);
+  process.off("unhandledRejection", onUnhandled);
 } finally {
   browser.kill("SIGTERM");
   await new Promise((resolve) => {

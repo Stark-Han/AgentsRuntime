@@ -143,8 +143,45 @@ if (patching && !playwrightSource.includes(playwrightMarker)) {
 playwrightSource = fs.readFileSync(playwrightTarget, "utf8");
 requireAll(playwrightSource, [playwrightMarker, "browserProxyMode: opts.browserProxyMode", "async function snapshotAiViaPlaywright(opts)", "async function snapshotRoleViaPlaywright(opts)", "async function snapshotAriaViaPlaywright(opts)"], "native browser proxy Playwright snapshot");
 
-for (const [label, source] of [["routes", routeSource], ["Playwright", playwrightSource]]) {
+const navigationFailureMarker = "CLAWMANAGER_CONTAIN_DOCUMENT_DNS_FAILURE";
+const playwrightSessionTarget = singleModule(/^pw-session-.*\.js$/, "async function gotoPageWithNavigationGuard(opts)", "Playwright navigation session");
+let playwrightSessionSource = fs.readFileSync(playwrightSessionTarget, "utf8");
+const uncontainedNavigationFailure = [
+  "\t\t} catch (err) {",
+  "\t\t\tif (isPolicyDenyNavigationError(err)) {",
+  "\t\t\t\tif (requestKind === \"top-level\") blockedError = err;",
+  "\t\t\t\tawait route.abort().catch(() => {});",
+  "\t\t\t\treturn;",
+  "\t\t\t}",
+  "\t\t\tthrow err;",
+  "\t\t}",
+].join("\n");
+const containedNavigationFailure = [
+  "\t\t} catch (err) {",
+  `\t\t\t// ${navigationFailureMarker}: DNS and transport lookup failures are`,
+  "\t\t\t// request failures, not process failures. Preserve policy denials and",
+  "\t\t\t// surface top-level failures to the browser tool while quietly aborting",
+  "\t\t\t// failed subframes so a third-party document cannot kill the Gateway.",
+  "\t\t\tif (requestKind === \"top-level\") blockedError = err;",
+  "\t\t\tawait route.abort().catch(() => {});",
+  "\t\t\treturn;",
+  "\t\t}",
+].join("\n");
+if (patching && !playwrightSessionSource.includes(navigationFailureMarker)) {
+  const navigationStart = playwrightSessionSource.indexOf("async function gotoPageWithNavigationGuard(opts)");
+  const navigationEnd = playwrightSessionSource.indexOf("/** Resolve a browser snapshot ref", navigationStart);
+  if (navigationStart < 0 || navigationEnd <= navigationStart) throw new Error("could not isolate Playwright guarded navigation");
+  const prefix = playwrightSessionSource.slice(0, navigationStart);
+  let navigationSource = playwrightSessionSource.slice(navigationStart, navigationEnd);
+  navigationSource = replaceOnce(navigationSource, uncontainedNavigationFailure, containedNavigationFailure, "uncontained document DNS failure");
+  playwrightSessionSource = prefix + navigationSource + playwrightSessionSource.slice(navigationEnd);
+  fs.writeFileSync(playwrightSessionTarget, playwrightSessionSource);
+}
+playwrightSessionSource = fs.readFileSync(playwrightSessionTarget, "utf8");
+requireAll(playwrightSessionSource, [navigationFailureMarker, 'if (requestKind === "top-level") blockedError = err;', "await route.abort().catch(() => {});", "async function gotoPageWithNavigationGuard(opts)"], "Playwright document DNS containment");
+
+for (const [label, source] of [["routes", routeSource], ["Playwright", playwrightSource], ["Playwright session", playwrightSessionSource]]) {
   if (source.includes("__clawmanagerBrowserProxyMode")) throw new Error(`${label} still contains the retired hidden proxy marker`);
 }
 
-process.stdout.write(`OpenClaw native Browser proxy patch verified in ${path.basename(chromeTarget)}, ${path.basename(routeTarget)}, and ${path.basename(playwrightTarget)}\n`);
+process.stdout.write(`OpenClaw native Browser proxy patch verified in ${path.basename(chromeTarget)}, ${path.basename(routeTarget)}, ${path.basename(playwrightTarget)}, and ${path.basename(playwrightSessionTarget)}\n`);
