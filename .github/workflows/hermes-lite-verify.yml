@@ -19,26 +19,19 @@ jobs:
           python-version: "3.13"
       - name: Install Python test dependencies
         run: python -m pip install --disable-pip-version-check --requirement hermes/tests/requirements.txt
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: clawmanager-agent/go.mod
-          cache-dependency-path: clawmanager-agent/go.sum
       - name: Verify lock and boundary tests
         run: |
           python -m unittest discover -s hermes/tests -p 'test_lite_*.py'
           python hermes/scripts/verify_lite_release.py --lock hermes/hermes-lite.lock.json --upstream \
             --patch-root hermes/patches/hermes-agent --test-root hermes/tests --acceptance-root hermes/acceptance
-          cd clawmanager-agent
-          go test ./...
-          go test -race ./internal/gateway ./internal/runtime/hermes ./internal/agent ./cmd/clawmanager-agent
       - uses: docker/setup-buildx-action@v3
-      - name: Run root-owned release fixtures in Linux
+      - name: Run Go tests and root-owned release fixtures in Linux
         run: |
           docker run --rm --user 0 \
             --mount "type=bind,source=${PWD}/clawmanager-agent,target=/src,readonly" \
             --workdir /src --env GOTOOLCHAIN=local \
             golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 \
-            go test -race -count=1 ./internal/runtime/hermes ./internal/control
+            go test -race -count=1 ./...
       - name: Build candidate with SBOM and provenance (never publish)
         run: |
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
