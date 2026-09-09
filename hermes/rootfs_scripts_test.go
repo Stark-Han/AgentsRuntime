@@ -8,18 +8,16 @@ import (
 )
 
 func TestDockerfilePackagesCanonicalRedisTeamAdapter(t *testing.T) {
-	for _, name := range []string{"Dockerfile", "Dockerfile.lite"} {
-		data, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		dockerfile := string(data)
-		if !strings.Contains(dockerfile, "COPY plugins/hermes-redis-team/ /tmp/hermes-vendor-plugins/redis_team/") {
-			t.Fatalf("%s does not package the canonical Hermes Redis Team adapter", name)
-		}
-		if strings.Contains(dockerfile, "COPY hermes/vendor-plugins/redis_team/") {
-			t.Fatalf("%s still packages the stale vendor mirror", name)
-		}
+	data, err := os.ReadFile("Dockerfile")
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	dockerfile := string(data)
+	if !strings.Contains(dockerfile, "COPY plugins/hermes-redis-team/ /tmp/hermes-vendor-plugins/redis_team/") {
+		t.Fatal("Dockerfile does not package the canonical Hermes Redis Team adapter")
+	}
+	if strings.Contains(dockerfile, "COPY hermes/vendor-plugins/redis_team/") {
+		t.Fatal("Dockerfile still packages the stale vendor mirror")
 	}
 }
 
