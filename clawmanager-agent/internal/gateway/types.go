@@ -159,25 +159,29 @@ type GatewayHealthChecker interface {
 }
 
 type GatewayState struct {
-	InstanceID    int       `json:"instance_id"`
-	UserID        int       `json:"user_id,omitempty"`
-	GatewayID     string    `json:"gateway_id"`
-	RuntimeType   string    `json:"runtime_type"`
-	WorkspacePath string    `json:"workspace_path"`
-	Port          int       `json:"gateway_port"`
-	PortAlias     int       `json:"port,omitempty"`
-	PID           int       `json:"gateway_pid,omitempty"`
-	UID           int       `json:"uid,omitempty"`
-	GID           int       `json:"gid,omitempty"`
-	CPUCores      int       `json:"cpu_cores,omitempty"`
-	MemoryMB      int       `json:"memory_mb,omitempty"`
-	DiskQuotaMB   int       `json:"disk_quota_mb,omitempty"`
-	Generation    int       `json:"generation"`
-	State         string    `json:"state"`
-	ErrorMessage  string    `json:"error_message,omitempty"`
-	HealthAt      time.Time `json:"health_at,omitempty"`
-	StartedAt     time.Time `json:"started_at,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+	InstanceID     int       `json:"instance_id"`
+	UserID         int       `json:"user_id,omitempty"`
+	GatewayID      string    `json:"gateway_id"`
+	RuntimeType    string    `json:"runtime_type"`
+	WorkspacePath  string    `json:"workspace_path"`
+	Port           int       `json:"gateway_port"`
+	PortAlias      int       `json:"port,omitempty"`
+	PID            int       `json:"gateway_pid,omitempty"`
+	UID            int       `json:"uid,omitempty"`
+	GID            int       `json:"gid,omitempty"`
+	CPUCores       int       `json:"cpu_cores,omitempty"`
+	MemoryMB       int       `json:"memory_mb,omitempty"`
+	DiskQuotaMB    int       `json:"disk_quota_mb,omitempty"`
+	Generation     int       `json:"generation"`
+	State          string    `json:"state"`
+	ErrorMessage   string    `json:"error_message,omitempty"`
+	FailureClass   string    `json:"failure_class,omitempty"`
+	ExitCode       *int      `json:"exit_code,omitempty"`
+	Retryable      *bool     `json:"retryable,omitempty"`
+	RestartAttempt int       `json:"restart_attempt,omitempty"`
+	HealthAt       time.Time `json:"health_at,omitempty"`
+	StartedAt      time.Time `json:"started_at,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitempty"`
 }
 
 type RegisterPayload struct {

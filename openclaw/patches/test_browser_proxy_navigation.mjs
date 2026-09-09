@@ -85,6 +85,51 @@ try {
     "async function navigateViaPlaywright(opts) { return opts; }",
     "export { snapshotAriaViaPlaywright, snapshotAiViaPlaywright, snapshotRoleViaPlaywright };",
   ].join("\n"));
+  fs.writeFileSync(path.join(dist, "pw-session-fixture.js"), [
+    "function withBrowserNavigationPolicy(ssrfPolicy, extra) { return { ssrfPolicy, ...extra }; }",
+    "function isPolicyDenyNavigationError(err) { return err?.code === 'SSRF_BLOCKED'; }",
+    "async function assertBrowserNavigationAllowed(opts) { if (opts.url.includes('dns-failure')) { const err = new Error('getaddrinfo ENOTFOUND rt.invalid'); err.code = 'ENOTFOUND'; throw err; } }",
+    "function classifyBrowserDocumentNavigationRequest(page, request) { return request.kind; }",
+    "async function continueRouteSafely(route) { route.continued = true; }",
+    "async function removePageNavigationRequestGuard() {}",
+    "async function closeBlockedNavigationTarget(opts) { opts.page.closed = true; }",
+    "function toErrorObject(err) { return err; }",
+    "async function gotoPageWithNavigationGuard(opts) {",
+    "\tconst navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, { browserProxyMode: opts.browserProxyMode });",
+    "\tlet blockedError = null;",
+    "\tconst handler = async (route, request) => {",
+    "\t\tif (blockedError) { await route.abort().catch(() => {}); return; }",
+    "\t\tconst requestKind = classifyBrowserDocumentNavigationRequest(opts.page, request);",
+    "\t\tif (!requestKind) { await continueRouteSafely(route); return; }",
+    "\t\ttry {",
+    "\t\t\tawait assertBrowserNavigationAllowed({ url: request.url(), ...navigationPolicy });",
+    "\t\t} catch (err) {",
+    "\t\t\tif (isPolicyDenyNavigationError(err)) {",
+    "\t\t\t\tif (requestKind === \"top-level\") blockedError = err;",
+    "\t\t\t\tawait route.abort().catch(() => {});",
+    "\t\t\t\treturn;",
+    "\t\t\t}",
+    "\t\t\tthrow err;",
+    "\t\t}",
+    "\t\tawait continueRouteSafely(route);",
+    "\t};",
+    "\tawait opts.page.route(\"**\", handler);",
+    "\tlet response = null; let navigationFailed = false; let navigationError;",
+    "\ttry { response = await opts.page.goto(opts.url, { timeout: opts.timeoutMs }); } catch (err) { navigationFailed = true; navigationError = err; }",
+    "\tconst cleanupError = await removePageNavigationRequestGuard(opts.page, handler);",
+    "\tif (blockedError) { await closeBlockedNavigationTarget({ cdpUrl: opts.cdpUrl, page: opts.page, targetId: opts.targetId }); throw toErrorObject(blockedError); }",
+    "\tif (navigationFailed) throw navigationError;",
+    "\tif (cleanupError !== void 0) throw toErrorObject(cleanupError);",
+    "\treturn response;",
+    "}",
+    "export async function simulate(kind) {",
+    "\tconst route = { aborted: false, abort: async function() { this.aborted = true; } };",
+    "\tconst request = { kind, url: () => 'https://dns-failure.invalid/' };",
+    "\tconst page = { closed: false, route: async (_pattern, handler) => { page.handler = handler; }, goto: async () => { await page.handler(route, request); return 'ok'; } };",
+    "\ttry { const value = await gotoPageWithNavigationGuard({ page, url: request.url(), ssrfPolicy: {} }); return { value, aborted: route.aborted, closed: page.closed }; } catch (err) { return { error: err.message, aborted: route.aborted, closed: page.closed }; }",
+    "}",
+    "/** Resolve a browser snapshot ref into a Playwright locator. */",
+  ].join("\n"));
 
   const run = (mode) => spawnSync(process.execPath, [patchScript, mode], { env: { ...process.env, OPENCLAW_PACKAGE_ROOT: fixtureRoot }, encoding: "utf8" });
   const patched = run("--patch");
@@ -104,6 +149,10 @@ try {
   assert.equal(await pw.snapshotAiViaPlaywright(opts), "explicit-browser-proxy");
   assert.equal(await pw.snapshotRoleViaPlaywright(opts), "explicit-browser-proxy");
   assert.equal(await pw.snapshotAriaViaPlaywright(opts), "explicit-browser-proxy");
+
+  const session = await import(pathToFileURL(path.join(dist, "pw-session-fixture.js")).href);
+  assert.deepEqual(await session.simulate("subframe"), { value: "ok", aborted: true, closed: false });
+  assert.deepEqual(await session.simulate("top-level"), { error: "getaddrinfo ENOTFOUND rt.invalid", aborted: true, closed: true });
 
   const routeSource = fs.readFileSync(path.join(dist, "routes-fixture.js"), "utf8");
   assert.equal((routeSource.match(/\.\.\.browserNavigationPolicyForProfile\(ctx, profileCtx\)/g) || []).length, 4);

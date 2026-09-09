@@ -17,8 +17,12 @@ import (
 )
 
 type gatewayRecord struct {
-	state   GatewayState
-	process ManagedProcess
+	state           GatewayState
+	process         ManagedProcess
+	startSpec       GatewayStartSpec
+	request         CreateGatewayRequest
+	restartAttempts int
+	readyAt         time.Time
 }
 
 type GatewayManager struct {
@@ -32,6 +36,7 @@ type GatewayManager struct {
 	upgradeStandby bool
 	gateways       map[string]*gatewayRecord
 	changes        chan struct{}
+	restartDelays  []time.Duration
 }
 
 func NewGatewayManager(cfg Config, starter ProcessStarter, ports *PortAllocator) *GatewayManager {
@@ -51,12 +56,13 @@ func NewGatewayManager(cfg Config, starter ProcessStarter, ports *PortAllocator)
 		ports.SetBlockSize(cfg.GatewayPortBlockSize)
 	}
 	manager := &GatewayManager{
-		cfg:      cfg,
-		starter:  starter,
-		ports:    ports,
-		health:   health,
-		gateways: map[string]*gatewayRecord{},
-		changes:  make(chan struct{}, 1),
+		cfg:           cfg,
+		starter:       starter,
+		ports:         ports,
+		health:        health,
+		gateways:      map[string]*gatewayRecord{},
+		changes:       make(chan struct{}, 1),
+		restartDelays: []time.Duration{time.Second, 3 * time.Second, 10 * time.Second},
 	}
 	manager.upgradeStandby = manager.shouldStartUpgradeStandby()
 	return manager
@@ -167,7 +173,7 @@ func (m *GatewayManager) CreateGateway(_ context.Context, req CreateGatewayReque
 		StartedAt:     now,
 		UpdatedAt:     now,
 	}
-	m.gateways[gatewayID] = &gatewayRecord{state: state}
+	m.gateways[gatewayID] = &gatewayRecord{state: state, request: req}
 	m.notifyGatewayStateChangedLocked()
 	resp := createGatewayResponse(state)
 	m.mu.Unlock()
@@ -218,7 +224,7 @@ func (m *GatewayManager) startGatewayInBackground(gatewayID string, req CreateGa
 		return
 	}
 	processStartDuration := time.Since(phaseStartedAt)
-	if !m.attachGatewayProcess(gatewayID, process) {
+	if !m.attachGatewayProcess(gatewayID, process, spec) {
 		m.stopProcessAsync(process)
 		return
 	}
@@ -267,18 +273,7 @@ func (m *GatewayManager) startGatewayInBackground(gatewayID string, req CreateGa
 		}
 	}
 	healthDuration := time.Since(phaseStartedAt)
-	var scheduledRaw string
-	if IsOpenClawAtLeast(m.cfg.OpenClawVersion, OpenClaw81Version) {
-		_, scheduledRaw = scheduledtasks.ReadScheduledTasksEnv(func(key string) string {
-			if value, ok := req.Environment[key]; ok {
-				return value
-			}
-			if value, ok := req.Env[key]; ok {
-				return value
-			}
-			return ""
-		})
-	}
+	scheduledRaw := m.scheduledTasksRaw(req)
 	m.markGatewayRunning(gatewayID, req, process.PID)
 	log.Printf("runtime-agent gateway ready: gateway_id=%s instance_id=%d port=%d pid=%d total_ms=%d prepare_ms=%d config_ms=%d process_ms=%d health_ms=%d", gatewayID, req.InstanceID, port, process.PID, time.Since(startedAt).Milliseconds(), prepareDuration.Milliseconds(), configDuration.Milliseconds(), processStartDuration.Milliseconds(), healthDuration.Milliseconds())
 	if scheduledRaw != "" {
@@ -670,7 +665,7 @@ func (m *GatewayManager) detachGatewayLocked(id string) ManagedProcess {
 	return record.process
 }
 
-func (m *GatewayManager) attachGatewayProcess(id string, process ManagedProcess) bool {
+func (m *GatewayManager) attachGatewayProcess(id string, process ManagedProcess, spec GatewayStartSpec) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	record, ok := m.gateways[id]
@@ -679,6 +674,7 @@ func (m *GatewayManager) attachGatewayProcess(id string, process ManagedProcess)
 	}
 	now := time.Now().UTC()
 	record.process = process
+	record.startSpec = spec
 	record.state.PID = process.PID
 	record.state.UpdatedAt = now
 	return true
@@ -696,8 +692,13 @@ func (m *GatewayManager) markGatewayRunning(id string, req CreateGatewayRequest,
 	record.state.PID = pid
 	record.state.State = "running"
 	record.state.ErrorMessage = resourceLimitDegradation(req)
+	record.state.FailureClass = ""
+	record.state.ExitCode = nil
+	record.state.Retryable = nil
+	record.state.RestartAttempt = 0
 	record.state.HealthAt = now
 	record.state.UpdatedAt = now
+	record.readyAt = now
 	m.notifyGatewayStateChangedLocked()
 }
 
@@ -716,6 +717,10 @@ func (m *GatewayManager) markGatewayError(id string, pid int, cause error) {
 	record.process = ManagedProcess{}
 	record.state.State = "error"
 	record.state.ErrorMessage = cause.Error()
+	record.state.FailureClass = "gateway_start_failed"
+	record.state.ExitCode = processExitCode(cause)
+	retryable := false
+	record.state.Retryable = &retryable
 	record.state.HealthAt = now
 	record.state.UpdatedAt = now
 	m.notifyGatewayStateChangedLocked()
@@ -724,9 +729,9 @@ func (m *GatewayManager) markGatewayError(id string, pid int, cause error) {
 func (m *GatewayManager) watchGatewayProcess(id string, pid int, done <-chan error) {
 	err := <-done
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	record, ok := m.gateways[id]
 	if !ok || record.process.PID != pid {
+		m.mu.Unlock()
 		return
 	}
 	now := time.Now().UTC()
@@ -739,21 +744,260 @@ func (m *GatewayManager) watchGatewayProcess(id string, pid int, done <-chan err
 		record.state.UpdatedAt = now
 		record.state.HealthAt = now
 		m.notifyGatewayStateChangedLocked()
+		m.mu.Unlock()
+		return
+	}
+	if err == nil {
+		err = errors.New("gateway process exited unexpectedly")
+	}
+	if !record.readyAt.IsZero() && now.Sub(record.readyAt) >= 5*time.Minute {
+		record.restartAttempts = 0
+	}
+	if m.automaticGatewayRecoveryEnabled() && len(m.restartDelays) > 0 && record.restartAttempts < len(m.restartDelays) {
+		record.restartAttempts++
+		attempt := record.restartAttempts
+		delay := m.restartDelays[attempt-1]
+		record.process = ManagedProcess{}
+		record.state.PID = 0
+		record.state.State = "starting"
+		record.state.ErrorMessage = fmt.Sprintf("recovering after unexpected gateway exit (attempt %d/%d): %v", attempt, len(m.restartDelays), err)
+		record.state.FailureClass = "unexpected_process_exit"
+		record.state.ExitCode = processExitCode(err)
+		retryable := true
+		record.state.Retryable = &retryable
+		record.state.RestartAttempt = attempt
+		record.state.UpdatedAt = now
+		record.state.HealthAt = now
+		m.notifyGatewayStateChangedLocked()
+		m.mu.Unlock()
+		go m.restartGatewayAfterUnexpectedExit(id, attempt, delay)
 		return
 	}
 	m.ports.Release(record.state.Port)
 	record.process = ManagedProcess{}
+	record.state.PID = 0
 	record.state.UpdatedAt = now
 	record.state.HealthAt = now
-	if err != nil {
-		record.state.State = "error"
-		record.state.ErrorMessage = err.Error()
-		m.notifyGatewayStateChangedLocked()
+	record.state.State = "error"
+	record.state.ErrorMessage = fmt.Sprintf("gateway exited and automatic recovery was exhausted after %d attempts: %v", record.restartAttempts, err)
+	record.state.FailureClass = "unexpected_process_exit"
+	record.state.ExitCode = processExitCode(err)
+	retryable := false
+	record.state.Retryable = &retryable
+	record.state.RestartAttempt = record.restartAttempts
+	m.notifyGatewayStateChangedLocked()
+	m.mu.Unlock()
+}
+
+func (m *GatewayManager) restartGatewayAfterUnexpectedExit(id string, attempt int, delay time.Duration) {
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		<-timer.C
+	}
+	m.mu.RLock()
+	record, ok := m.gateways[id]
+	if !ok || record.state.State != "starting" || record.restartAttempts != attempt || record.process.PID != 0 {
+		m.mu.RUnlock()
 		return
 	}
-	record.state.State = "stopped"
-	record.state.ErrorMessage = ""
+	spec := record.startSpec
+	req := record.request
+	m.mu.RUnlock()
+
+	process, err := m.starter.StartGateway(context.Background(), spec)
+	if err != nil {
+		m.finishGatewayRestartAttempt(id, attempt, fmt.Errorf("restart process: %w", err))
+		return
+	}
+	if !m.attachRestartedGatewayProcess(id, attempt, process) {
+		m.stopProcessAsync(process)
+		return
+	}
+
+	healthCtx, cancelHealth := context.WithCancel(context.Background())
+	healthResult := make(chan error, 1)
+	go func() { healthResult <- m.health.WaitReady(healthCtx, spec) }()
+	if process.Done != nil {
+		select {
+		case processErr := <-process.Done:
+			cancelHealth()
+			if processErr == nil {
+				processErr = errors.New("gateway process exited before recovery readiness")
+			}
+			m.finishGatewayRestartAttempt(id, attempt, processErr)
+			return
+		case healthErr := <-healthResult:
+			cancelHealth()
+			if healthErr != nil {
+				if stopErr := m.stopGatewayRecoveryProcess(process); stopErr != nil {
+					m.failGatewayRecoveryWithoutFence(id, attempt, fmt.Errorf("restart readiness: %v; process stop was not confirmed: %w", healthErr, stopErr))
+					return
+				}
+				m.finishGatewayRestartAttempt(id, attempt, fmt.Errorf("restart readiness: %w", healthErr))
+				return
+			}
+		}
+		select {
+		case processErr := <-process.Done:
+			if processErr == nil {
+				processErr = errors.New("gateway process exited at recovery readiness boundary")
+			}
+			m.finishGatewayRestartAttempt(id, attempt, processErr)
+			return
+		default:
+		}
+	} else {
+		healthErr := <-healthResult
+		cancelHealth()
+		if healthErr != nil {
+			if stopErr := m.stopGatewayRecoveryProcess(process); stopErr != nil {
+				m.failGatewayRecoveryWithoutFence(id, attempt, fmt.Errorf("restart readiness: %v; process stop was not confirmed: %w", healthErr, stopErr))
+				return
+			}
+			m.finishGatewayRestartAttempt(id, attempt, fmt.Errorf("restart readiness: %w", healthErr))
+			return
+		}
+	}
+	m.markRestartedGatewayRunning(id, attempt, process.PID)
+	if scheduledRaw := m.scheduledTasksRaw(req); scheduledRaw != "" {
+		go m.reconcileAutomationsWithRetry(id, req, scheduledRaw, spec.Port)
+	}
+	if process.Done != nil {
+		go m.watchGatewayProcess(id, process.PID, process.Done)
+	}
+}
+
+func (m *GatewayManager) stopGatewayRecoveryProcess(process ManagedProcess) error {
+	if process.Stop == nil {
+		return errors.New("managed process does not support confirmed stop")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), m.stopTimeout())
+	defer cancel()
+	return process.Stop(ctx)
+}
+
+func (m *GatewayManager) failGatewayRecoveryWithoutFence(id string, attempt int, cause error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.gateways[id]
+	if !ok || record.restartAttempts != attempt || record.state.State == "stopping" {
+		return
+	}
+	record.state.State = "error"
+	record.state.ErrorMessage = cause.Error()
+	record.state.FailureClass = "restart_stop_unconfirmed"
+	record.state.ExitCode = processExitCode(cause)
+	retryable := false
+	record.state.Retryable = &retryable
+	record.state.RestartAttempt = attempt
+	record.state.UpdatedAt = time.Now().UTC()
 	m.notifyGatewayStateChangedLocked()
+}
+
+func (m *GatewayManager) attachRestartedGatewayProcess(id string, attempt int, process ManagedProcess) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.gateways[id]
+	if !ok || record.state.State != "starting" || record.restartAttempts != attempt || record.process.PID != 0 {
+		return false
+	}
+	record.process = process
+	record.state.PID = process.PID
+	record.state.UpdatedAt = time.Now().UTC()
+	m.notifyGatewayStateChangedLocked()
+	return true
+}
+
+func (m *GatewayManager) markRestartedGatewayRunning(id string, attempt int, pid int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.gateways[id]
+	if !ok || record.state.State != "starting" || record.restartAttempts != attempt || record.process.PID != pid {
+		return
+	}
+	now := time.Now().UTC()
+	record.state.State = "running"
+	record.state.ErrorMessage = ""
+	record.state.FailureClass = ""
+	record.state.ExitCode = nil
+	record.state.Retryable = nil
+	record.state.RestartAttempt = 0
+	record.state.HealthAt = now
+	record.state.UpdatedAt = now
+	record.readyAt = now
+	m.notifyGatewayStateChangedLocked()
+}
+
+func (m *GatewayManager) finishGatewayRestartAttempt(id string, attempt int, cause error) {
+	m.mu.Lock()
+	record, ok := m.gateways[id]
+	if !ok || record.restartAttempts != attempt || record.state.State == "stopping" {
+		m.mu.Unlock()
+		return
+	}
+	record.process = ManagedProcess{}
+	record.state.PID = 0
+	record.state.UpdatedAt = time.Now().UTC()
+	if attempt < len(m.restartDelays) {
+		record.restartAttempts++
+		nextAttempt := record.restartAttempts
+		delay := m.restartDelays[nextAttempt-1]
+		record.state.State = "starting"
+		record.state.ErrorMessage = fmt.Sprintf("recovering after unexpected gateway exit (attempt %d/%d): %v", nextAttempt, len(m.restartDelays), cause)
+		record.state.FailureClass = "unexpected_process_exit"
+		record.state.ExitCode = processExitCode(cause)
+		retryable := true
+		record.state.Retryable = &retryable
+		record.state.RestartAttempt = nextAttempt
+		m.notifyGatewayStateChangedLocked()
+		m.mu.Unlock()
+		go m.restartGatewayAfterUnexpectedExit(id, nextAttempt, delay)
+		return
+	}
+	m.ports.Release(record.state.Port)
+	record.state.State = "error"
+	record.state.ErrorMessage = fmt.Sprintf("gateway automatic recovery exhausted after %d attempts: %v", attempt, cause)
+	record.state.FailureClass = "unexpected_process_exit"
+	record.state.ExitCode = processExitCode(cause)
+	retryable := false
+	record.state.Retryable = &retryable
+	record.state.RestartAttempt = attempt
+	m.notifyGatewayStateChangedLocked()
+	m.mu.Unlock()
+}
+
+func processExitCode(err error) *int {
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return nil
+	}
+	code := exitErr.ExitCode()
+	return &code
+}
+
+func (m *GatewayManager) automaticGatewayRecoveryEnabled() bool {
+	return m != nil &&
+		strings.EqualFold(strings.TrimSpace(m.cfg.RuntimeType), "openclaw") &&
+		IsOpenClawAtLeast(m.cfg.OpenClawVersion, OpenClaw81Version)
+}
+
+func (m *GatewayManager) scheduledTasksRaw(req CreateGatewayRequest) string {
+	if m == nil || !IsOpenClawAtLeast(m.cfg.OpenClawVersion, OpenClaw81Version) {
+		return ""
+	}
+	_, raw := scheduledtasks.ReadScheduledTasksEnv(func(key string) string {
+		if value, ok := req.Environment[key]; ok {
+			return value
+		}
+		if value, ok := req.Env[key]; ok {
+			return value
+		}
+		return ""
+	})
+	return raw
 }
 
 func (m *GatewayManager) notifyGatewayStateChangedLocked() {
