@@ -114,7 +114,7 @@ def main():
 
         log_path = Path(temporary) / "server.log"
         with log_path.open("wb") as logfile:
-            process = subprocess.Popen(["/usr/local/bin/start-hermes-lite-dashboard"], env=environment,
+            process = subprocess.Popen(["/usr/local/bin/start-hermes-lite-runtime"], env=environment,
                                        stdout=logfile, stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 deadline = time.monotonic() + 90

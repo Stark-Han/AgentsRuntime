@@ -286,6 +286,46 @@ func TestDashboardHealthAuthenticatesHTTPAndWebSocketWithoutUserOperations(t *te
 	}
 }
 
+func TestDashboardTeamHealthRequiresDashboardAndMatchingConsumer(t *testing.T) {
+	fixture := &dashboardFixture{}
+	checker, spec := newDashboardHealthFixture(t, fixture)
+	checker.cfg.GatewayStartupTimeout = 180 * time.Millisecond
+	readyFile := filepath.Join(spec.WorkspacePath, "home", ".clawmanager-team-worker", ".hermes", "runtime", "redis-team.ready.json")
+	spec.Env = append(spec.Env,
+		"CLAWMANAGER_TEAM_ENABLED=true",
+		"CLAWMANAGER_TEAM_REDIS_URL=redis://redis.example.invalid:6379/0",
+		"CLAWMANAGER_TEAM_ID=team-42",
+		"CLAWMANAGER_TEAM_MEMBER_ID=developer",
+		"CLAWMANAGER_TEAM_READY_FILE="+readyFile,
+	)
+
+	if err := checker.WaitReady(context.Background(), spec); err == nil || !strings.Contains(err.Error(), "consumer readiness") {
+		t.Fatalf("WaitReady() error = %v, want missing Team consumer readiness", err)
+	}
+	writeDashboardTeamStartupState(t, readyFile, map[string]any{
+		"ready": true, "state": "ready", "runtime": "hermes",
+		"teamId": "team-42", "memberId": "developer",
+		"instanceId": 63, "generation": 7,
+	})
+	if err := checker.WaitReady(context.Background(), spec); err != nil {
+		t.Fatalf("WaitReady() error = %v, want Dashboard and Team consumer ready", err)
+	}
+}
+
+func writeDashboardTeamStartupState(t *testing.T, path string, value map[string]any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDashboardHealthRejectsFalseHTTPReadiness(t *testing.T) {
 	cases := []struct {
 		name                    string

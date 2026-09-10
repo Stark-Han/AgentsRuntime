@@ -20,7 +20,14 @@ const managedConfigEnd = "# clawmanager-managed-end"
 
 func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, workspacePath string) error {
 	if desktopWebEnabled() {
-		return writeDesktopWebConfig(cfg, req, workspacePath)
+		// Validate and persist the Dashboard's managed configuration first. An
+		// invalid Web request must not mutate the shared Team contract. Both
+		// writers are idempotent, so a later Team filesystem error can converge
+		// safely on retry without replacing user state.
+		if err := writeDesktopWebConfig(cfg, req, workspacePath); err != nil {
+			return err
+		}
+		return gateway.WriteLiteTeamConfigJSON(req, workspacePath)
 	}
 	if err := gateway.WriteLiteTeamConfigJSON(req, workspacePath); err != nil {
 		return err

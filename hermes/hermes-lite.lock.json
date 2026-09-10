@@ -40,7 +40,8 @@
     "apply_lite_tool_executor.py": "ca1e4fa39710712dfa87a383ad3e8a943789b424808154a0b5545433aaeb8d2a",
     "lite_environment.py": "b3ac25e2f81dc4f3efae8f5ef7627116becd72447264ff74f29f06b9898ea3d3",
     "lite_gateway_boundary.py": "2425fec1d93a8c2cc98bda3d32d9f8623af1a253d4811930ce0decc41b374f7a",
-    "lite_non_native.py": "b2f92c336ddf005697ff7fac00ff621409549951bef03783d01857b53b16bfc2"
+    "lite_non_native.py": "b2f92c336ddf005697ff7fac00ff621409549951bef03783d01857b53b16bfc2",
+    "apply_team_completion_stop.py": "ff8866963e9dcb6a293de03c85eddc1c864abd9b06834a91ded2bee99787e84b"
   },
   "test_sha256": {
     "acceptance_model_stub.py": "03d03de09eb5164b7724e5f19ff66656667e547918601d0beebd805b17b48acc",
@@ -49,7 +50,7 @@
     "smoke_lite_agent.py": "35ddbbf2b5e9e46720945739f60a94bf846c52d3616aca032245af1b1eeb20fd",
     "smoke_lite_cm_bff_browser.py": "dc2da24236fc35f9717611cf7a86f7b8ab72cd2a999f241d6b5a404d9add277e",
     "smoke_lite_desktop_rpc.py": "bb377c4a9f5854afd48d0526dca57501358879dcdc791f239d1c15c1339ca864",
-    "smoke_lite_image.py": "516352de9e0ca10836658234f745935929b7c0caadb73e0ed1de6cf45a38843b",
+    "smoke_lite_image.py": "2589133ebfd8fab67d38acd2513ea1202ccc7c2124d76d983b58cd529d742374",
     "smoke_lite_non_native.py": "6f13ccc46d07d52cf20252a28e82e0b5341bfd9c450aae72375d59248b0b8cf2",
     "smoke_lite_provider.py": "ddc80471c029676e32d56139b0426b0c4d471e8b265599a22e28fb9201607a42"
   },

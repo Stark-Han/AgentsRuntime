@@ -20,12 +20,6 @@ func validateDesktopWebRequest(cfg gateway.Config, req gateway.CreateGatewayRequ
 	if mode != "" && mode != "dashboard" {
 		return fmt.Errorf("unsupported_hermes_protocol: only dashboard mode is verified")
 	}
-	if enabled, _ := requestEnvValue(req, "CLAWMANAGER_TEAM_ENABLED"); truthy(enabled) {
-		return fmt.Errorf("unsupported_hermes_protocol: Team Desktop Web is not enabled")
-	}
-	if team, _ := requestEnvValue(req, "CLAWMANAGER_TEAM_CONFIG_JSON"); strings.TrimSpace(team) != "" {
-		return fmt.Errorf("unsupported_hermes_protocol: Team Desktop Web is not enabled")
-	}
 	if req.InstanceID <= 0 || req.UserID <= 0 || req.Generation <= 0 || req.UID <= 0 || req.GID <= 0 {
 		return fmt.Errorf("invalid_gateway_identity: positive instance, user, generation, uid and gid are required")
 	}
@@ -105,6 +99,53 @@ func desktopWebEnvironment(base []string, cfg gateway.Config, req gateway.Create
 	for key, value := range values {
 		env = setEnv(env, key, value)
 	}
+	if desktopWebTeamRequest(req) {
+		env = desktopWebTeamEnvironment(env, req, workspace)
+	}
+	return env
+}
+
+func desktopWebTeamRequest(req gateway.CreateGatewayRequest) bool {
+	enabled, _ := requestEnvValue(req, "CLAWMANAGER_TEAM_ENABLED")
+	if truthy(enabled) {
+		return true
+	}
+	configJSON, _ := requestEnvValue(req, "CLAWMANAGER_TEAM_CONFIG_JSON")
+	return strings.TrimSpace(configJSON) != ""
+}
+
+// desktopWebTeamEnvironment carries only the existing, reviewed Hermes Team
+// contract into the co-hosted Team consumer. Dashboard credentials and the
+// runtime-pod control plane remain isolated from the request environment.
+func desktopWebTeamEnvironment(env []string, req gateway.CreateGatewayRequest, workspace string) []string {
+	teamKeys := []string{
+		"CLAWMANAGER_TEAM_ENABLED", "CLAWMANAGER_TEAM_ID", "CLAWMANAGER_TEAM_MEMBER_ID",
+		"CLAWMANAGER_TEAM_ROLE", "CLAWMANAGER_TEAM_EFFECTIVE_ROLE", "CLAWMANAGER_TEAM_RUNTIME_TYPE",
+		"CLAWMANAGER_TEAM_PROTOCOL_VERSION", "CLAWMANAGER_TEAM_COMMUNICATION_MODE",
+		"CLAWMANAGER_TEAM_AUTORUN", "CLAWMANAGER_TEAM_CONSUMER_GROUP",
+		"CLAWMANAGER_TEAM_EMBEDDED_TIMEOUT_SECONDS", "CLAWMANAGER_TEAM_TASK_STALE_SECONDS",
+		"CLAWMANAGER_TEAM_REDIS_URL", "CLAWMANAGER_TEAM_REDIS_DB", "CLAWMANAGER_TEAM_REDIS_PORT",
+		"CLAWMANAGER_TEAM_REDIS_SERVICE", "CLAWMANAGER_TEAM_REDIS_SERVICE_NAME",
+		"CLAWMANAGER_TEAM_REDIS_SERVICE_PORT", "CLAWMANAGER_TEAM_INBOX_KEY",
+		"CLAWMANAGER_TEAM_EVENTS_KEY", "CLAWMANAGER_TEAM_PRESENCE_KEY", "CLAWMANAGER_TEAM_DLQ_KEY",
+		"CLAWMANAGER_TEAM_MANAGER_URL", "CLAWMANAGER_TEAM_MANAGER_BASE_URL", "CLAWMANAGER_TEAM_TOKEN",
+		"CLAWMANAGER_TEAM_PREVIEW_ORIGIN", "CLAWMANAGER_TEAM_COLLABORATION_POLICY_JSON",
+		"CLAWMANAGER_TEAM_PROFILE_KEY", "CLAWMANAGER_TEAM_PROFILE_NAME",
+		"CLAWMANAGER_TEAM_MEMBER_DESCRIPTION", "CLAWMANAGER_TEAM_SYSTEM_PROMPT",
+		"CLAWMANAGER_TEAM_BACKEND_BOOTSTRAP", "CLAWMANAGER_TEAM_UMASK",
+		"HERMES_AGENT_HELP_GUIDANCE", "CLAWMANAGER_BROWSER_PROXY_URL",
+	}
+	for _, key := range teamKeys {
+		if value, ok := requestEnvValue(req, key); ok {
+			env = setEnv(env, key, value)
+		}
+	}
+	env = gateway.ApplyLiteTeamConfigEnvironment(env, req, workspace)
+	env = setEnv(env, "CLAWMANAGER_TEAM_ENABLED", "true")
+	workerHome := filepath.Join(workspace, "home", ".clawmanager-team-worker")
+	env = setEnv(env, "HERMES_TEAM_WORKER_HOME", workerHome)
+	env = setEnv(env, "CLAWMANAGER_TEAM_READY_FILE", filepath.Join(workerHome, ".hermes", "runtime", "redis-team.ready.json"))
+	env = setEnv(env, "HERMES_ACCEPT_HOOKS", "1")
 	return env
 }
 

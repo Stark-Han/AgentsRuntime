@@ -45,7 +45,7 @@ func (p Profile) Defaults() gateway.RuntimeDefaults {
 
 func (p Profile) GatewayCommand(string) []string {
 	if p.desktopWeb {
-		return []string{"start-hermes-lite-dashboard"}
+		return []string{"start-hermes-lite-runtime"}
 	}
 	return []string{"start-hermes-desktop"}
 }
@@ -96,6 +96,15 @@ func (p Profile) PrepareWorkspace(cfg gateway.Config, req gateway.CreateGatewayR
 	if p.desktopWeb {
 		if err := validateDesktopWebRequest(cfg, req); err != nil {
 			return err
+		}
+		if desktopWebTeamRequest(req) {
+			prepared, err := gateway.PrepareWorkspace(cfg.WorkspaceRoot, cfg.RuntimeType, req)
+			if err != nil {
+				return err
+			}
+			if prepared != workspacePath {
+				return fmt.Errorf("%w: prepared %s want %s", gateway.ErrWorkspacePath, prepared, workspacePath)
+			}
 		}
 		return prepareDesktopWebWorkspace(cfg, req, workspacePath)
 	}

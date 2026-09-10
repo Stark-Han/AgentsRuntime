@@ -26,11 +26,13 @@ COPY hermes/patches/hermes-agent/apply_lite_non_native.py /tmp/lite-patch/
 COPY hermes/patches/hermes-agent/lite_non_native.py /tmp/lite-patch/
 COPY hermes/patches/hermes-agent/lite_environment.py /tmp/lite-patch/
 COPY hermes/patches/hermes-agent/apply_lite_tool_executor.py /tmp/lite-patch/
+COPY hermes/patches/hermes-agent/apply_team_completion_stop.py /tmp/lite-patch/
 RUN python /usr/local/share/hermes-lite/verify_lite_release.py \
        --lock /usr/local/share/hermes-lite/source-lock.json --patch-root /tmp/lite-patch \
     && python /tmp/lite-patch/apply_lite_gateway_boundary.py /opt/hermes-agent \
     && python /tmp/lite-patch/apply_lite_non_native.py /opt/hermes-agent \
     && python /tmp/lite-patch/apply_lite_tool_executor.py /opt/hermes-agent \
+    && python /tmp/lite-patch/apply_team_completion_stop.py /opt/hermes-agent/agent/conversation_loop.py \
     && rm -rf /tmp/lite-patch
 
 FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS dashboard-builder
@@ -72,7 +74,7 @@ LABEL org.opencontainers.image.title="Hermes Lite" \
     io.clawmanager.hermes.tag=${HERMES_GIT_REF} \
     io.clawmanager.hermes.commit=${HERMES_GIT_COMMIT} \
     io.clawmanager.hermes.version=${HERMES_VERSION} \
-    io.clawmanager.hermes.patch="lite-gateway-boundary-v1,lite-non-native-v1"
+    io.clawmanager.hermes.patch="lite-gateway-boundary-v1,lite-non-native-v1,redis-team-web-v1"
 ENV PATH=/opt/hermes-agent/.venv/bin:/usr/local/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     HERMES_VERSION=${HERMES_VERSION} HERMES_GIT_REF=${HERMES_GIT_REF} HERMES_GIT_COMMIT=${HERMES_GIT_COMMIT} \
@@ -92,17 +94,21 @@ COPY --from=dashboard-builder /usr/local/LICENSE /usr/local/share/licenses/node/
 COPY --from=dashboard-builder /third-party-notices/ /usr/local/share/licenses/hermes-dashboard/
 COPY --from=agent-builder /out/clawmanager-agent /usr/local/bin/clawmanager-agent
 COPY --from=source /usr/local/share/hermes-lite/ /usr/local/share/hermes-lite/
+COPY plugins/hermes-redis-team/ /opt/hermes-agent/plugins/platforms/redis_team/
 COPY hermes/scripts/run_release_check.py /usr/local/share/hermes-lite/run_release_check.py
 COPY hermes/scripts/run_campaign.py hermes/scripts/campaign_signing.py hermes/scripts/verify_lite_promotion_oci.py hermes/scripts/verify_campaign_signature.mjs /usr/local/share/hermes-lite/
 COPY hermes/acceptance/release-trust.json hermes/acceptance/acceptance-protocol.json /usr/local/share/hermes-lite/
-COPY hermes/patches/hermes-agent/apply_lite_gateway_boundary.py hermes/patches/hermes-agent/lite_gateway_boundary.py hermes/patches/hermes-agent/apply_lite_non_native.py hermes/patches/hermes-agent/lite_non_native.py hermes/patches/hermes-agent/lite_environment.py hermes/patches/hermes-agent/apply_lite_tool_executor.py /usr/local/share/hermes-lite/patches/
+COPY hermes/patches/hermes-agent/apply_lite_gateway_boundary.py hermes/patches/hermes-agent/lite_gateway_boundary.py hermes/patches/hermes-agent/apply_lite_non_native.py hermes/patches/hermes-agent/lite_non_native.py hermes/patches/hermes-agent/lite_environment.py hermes/patches/hermes-agent/apply_lite_tool_executor.py hermes/patches/hermes-agent/apply_team_completion_stop.py /usr/local/share/hermes-lite/patches/
 COPY hermes/tests/smoke_lite_image.py hermes/tests/smoke_lite_provider.py hermes/tests/smoke_lite_agent.py hermes/tests/smoke_lite_non_native.py hermes/tests/smoke_lite_desktop_rpc.py hermes/tests/smoke_lite_cm_bff_browser.py hermes/tests/check_lite_tool_executor.py /usr/local/share/hermes-lite/tests/
 COPY hermes/tests/cm_bff_browser.mjs hermes/tests/acceptance_model_stub.py /usr/local/share/hermes-lite/tests/
 COPY hermes/rootfs/usr/local/bin/start-hermes-lite-dashboard /usr/local/bin/start-hermes-lite-dashboard
+COPY hermes/rootfs/usr/local/bin/hermes-apply-runtime-config /usr/local/bin/hermes-apply-runtime-config
+COPY hermes/rootfs/usr/local/share/clawmanager/hermes/skills/redis-team-protocol/ /usr/local/share/clawmanager/hermes/skills/redis-team-protocol/
+COPY hermes/scripts/start-hermes-lite-runtime /usr/local/bin/start-hermes-lite-runtime
 COPY hermes/scripts/hermes-lite-entrypoint /usr/local/bin/hermes-lite-entrypoint
 RUN python -c 'import json,os; p=json.load(open("/usr/local/share/hermes-lite/source-lock.json")); assert (os.environ["HERMES_VERSION"],os.environ["HERMES_GIT_REF"],os.environ["HERMES_GIT_COMMIT"]) == (p["package_version"],p["tag"],p["commit"]), "release build args must match lock"' \
-    && sed -i 's/\r$//' /usr/local/bin/start-hermes-lite-dashboard /usr/local/bin/hermes-lite-entrypoint \
-    && chmod 0755 /usr/local/bin/start-hermes-lite-dashboard /usr/local/bin/hermes-lite-entrypoint \
+    && sed -i 's/\r$//' /usr/local/bin/start-hermes-lite-dashboard /usr/local/bin/start-hermes-lite-runtime /usr/local/bin/hermes-apply-runtime-config /usr/local/bin/hermes-lite-entrypoint \
+    && chmod 0755 /usr/local/bin/start-hermes-lite-dashboard /usr/local/bin/start-hermes-lite-runtime /usr/local/bin/hermes-apply-runtime-config /usr/local/bin/hermes-lite-entrypoint \
     && mkdir -p /workspaces /var/lib/clawmanager-agent /usr/local/share/licenses/hermes-agent \
     && cp /opt/hermes-agent/LICENSE /usr/local/share/licenses/hermes-agent/LICENSE \
     && python /usr/local/share/hermes-lite/verify_lite_release.py --lock /usr/local/share/hermes-lite/source-lock.json \

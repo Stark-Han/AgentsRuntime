@@ -41,11 +41,11 @@ func TestDesktopWebEnvironmentWhitelistAndAuthoritativeIdentity(t *testing.T) {
 			t.Errorf("wrong value for %s", key)
 		}
 	}
-	if got := p.GatewayCommand(""); len(got) != 1 || got[0] != "start-hermes-lite-dashboard" {
+	if got := p.GatewayCommand(""); len(got) != 1 || got[0] != "start-hermes-lite-runtime" {
 		t.Fatal(got)
 	}
 }
-func TestDesktopWebBackendAndTeamFailBeforeWorkspaceMutation(t *testing.T) {
+func TestDesktopWebRejectsUnsupportedBackendBeforeWorkspaceMutation(t *testing.T) {
 	t.Setenv(desktopWebFlag, "true")
 	for _, mode := range []string{"serve", "invalid"} {
 		t.Run(mode, func(t *testing.T) {
@@ -61,12 +61,52 @@ func TestDesktopWebBackendAndTeamFailBeforeWorkspaceMutation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDesktopWebTeamUsesExistingTeamContractAlongsideDashboard(t *testing.T) {
+	t.Setenv(desktopWebFlag, "true")
 	t.Setenv("CLAWMANAGER_HERMES_BACKEND_MODE", "dashboard")
 	root := t.TempDir()
 	req := strictTestRequest(root)
 	req.Environment["CLAWMANAGER_TEAM_ENABLED"] = "true"
-	if err := NewProfile("hermes").PrepareWorkspace(gateway.Config{}, req, req.WorkspacePath); err == nil {
-		t.Fatal("Team accepted")
+	req.Environment["CLAWMANAGER_TEAM_ID"] = "42"
+	req.Environment["CLAWMANAGER_TEAM_MEMBER_ID"] = "leader"
+	req.Environment["CLAWMANAGER_TEAM_ROLE"] = "leader"
+	req.Environment["CLAWMANAGER_TEAM_REDIS_URL"] = "redis://redis.example:6379/0"
+	req.Environment["CLAWMANAGER_TEAM_SHARED_DIR"] = "/team"
+	req.Environment["CLAWMANAGER_TEAM_TOKEN"] = "team-secret"
+	cfg := gateway.Config{WorkspaceRoot: root, RuntimeType: "hermes", GatewayPortStart: 20000, GatewayPortEnd: 20299}
+	if err := NewProfile("hermes").PrepareWorkspace(cfg, req, req.WorkspacePath); err != nil {
+		t.Fatalf("Team Desktop Web workspace rejected: %v", err)
+	}
+	env := NewProfile("hermes").GatewayEnv(nil, cfg, req, req.WorkspacePath, 20000)
+	for key, want := range map[string]string{
+		"CLAWMANAGER_TEAM_ENABLED": "true", "CLAWMANAGER_TEAM_ID": "42",
+		"CLAWMANAGER_TEAM_MEMBER_ID": "leader", "CLAWMANAGER_TEAM_ROLE": "leader",
+		"CLAWMANAGER_TEAM_REDIS_URL": "redis://redis.example:6379/0", "CLAWMANAGER_TEAM_TOKEN": "team-secret",
+		"CLAWMANAGER_TEAM_SHARED_DIR":            filepath.Join(req.WorkspacePath, "team"),
+		"HERMES_TEAM_WORKER_HOME":                filepath.Join(req.WorkspacePath, "home", ".clawmanager-team-worker"),
+		"CLAWMANAGER_HERMES_DESKTOP_WEB_ENABLED": "true", "HERMES_ACCEPT_HOOKS": "1",
+	} {
+		if got := envValue(env, key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestDesktopWebTeamConfigAloneEnablesExistingTeamContract(t *testing.T) {
+	req := gateway.CreateGatewayRequest{Environment: map[string]string{
+		"CLAWMANAGER_TEAM_CONFIG_JSON": `{"teamId":"42","memberId":"worker"}`,
+		"CLAWMANAGER_TEAM_ID":          "42",
+		"CLAWMANAGER_TEAM_MEMBER_ID":   "worker",
+		"CLAWMANAGER_TEAM_REDIS_URL":   "redis://redis.example:6379/0",
+	}}
+	if !desktopWebTeamRequest(req) {
+		t.Fatal("Team config JSON did not select the established Team contract")
+	}
+	env := desktopWebTeamEnvironment(nil, req, "/workspaces/hermes/user-1/instance-2")
+	if got := envValue(env, "CLAWMANAGER_TEAM_ENABLED"); got != "true" {
+		t.Fatalf("CLAWMANAGER_TEAM_ENABLED = %q, want true", got)
 	}
 }
 func TestDesktopWebCannotUsePodAuthOrLLMCredentials(t *testing.T) {

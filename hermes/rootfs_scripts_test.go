@@ -21,6 +21,39 @@ func TestDockerfilePackagesCanonicalRedisTeamAdapter(t *testing.T) {
 	}
 }
 
+func TestLiteDockerfilePackagesCanonicalTeamAdapterAndCoHostedSupervisor(t *testing.T) {
+	data, err := os.ReadFile("Dockerfile.lite")
+	if err != nil {
+		t.Fatalf("read Dockerfile.lite: %v", err)
+	}
+	dockerfile := string(data)
+	for _, want := range []string{
+		"COPY plugins/hermes-redis-team/ /opt/hermes-agent/plugins/platforms/redis_team/",
+		"apply_team_completion_stop.py /opt/hermes-agent/agent/conversation_loop.py",
+		"start-hermes-lite-runtime /usr/local/bin/start-hermes-lite-runtime",
+		"hermes-apply-runtime-config /usr/local/bin/hermes-apply-runtime-config",
+	} {
+		if !strings.Contains(dockerfile, want) {
+			t.Fatalf("Dockerfile.lite missing Team compatibility contract %q", want)
+		}
+	}
+	launcher, err := os.ReadFile(filepath.Join("scripts", "start-hermes-lite-runtime"))
+	if err != nil {
+		t.Fatalf("read Lite supervisor: %v", err)
+	}
+	for _, want := range []string{
+		"start-hermes-lite-dashboard",
+		"hermes gateway run --accept-hooks --no-supervise",
+		"plugins/platforms/redis_team/adapter.py",
+		"hermes-apply-runtime-config",
+		"wait -n",
+	} {
+		if !strings.Contains(string(launcher), want) {
+			t.Fatalf("Lite supervisor missing %q", want)
+		}
+	}
+}
+
 func TestDockerfileAppliesVersionLockedTeamCompletionStopPatch(t *testing.T) {
 	data, err := os.ReadFile("Dockerfile")
 	if err != nil {

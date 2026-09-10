@@ -61,7 +61,14 @@ func newHealthChecker(cfg gateway.Config) gateway.GatewayHealthChecker {
 
 func (h *healthChecker) WaitReady(ctx context.Context, spec gateway.GatewayStartSpec) error {
 	if truthy(envValue(spec.Env, "CLAWMANAGER_HERMES_DESKTOP_WEB_ENABLED")) {
-		return h.waitDashboardReady(ctx, spec)
+		expectation, required, err := teamStartupExpectationFor(spec)
+		if err != nil {
+			return err
+		}
+		if !required {
+			return h.waitDashboardReady(ctx, spec)
+		}
+		return h.waitRuntimeAndTeam(ctx, spec, expectation, "Hermes Dashboard", h.waitDashboardReady)
 	}
 	expectation, required, err := teamStartupExpectationFor(spec)
 	if err != nil {
@@ -70,7 +77,16 @@ func (h *healthChecker) WaitReady(ctx context.Context, spec gateway.GatewayStart
 	if !required {
 		return h.http.WaitReady(ctx, spec)
 	}
+	return h.waitRuntimeAndTeam(ctx, spec, expectation, "Hermes runtime", h.http.WaitReady)
+}
 
+func (h *healthChecker) waitRuntimeAndTeam(
+	ctx context.Context,
+	spec gateway.GatewayStartSpec,
+	expectation teamStartupExpectation,
+	runtimeName string,
+	runtimeReady func(context.Context, gateway.GatewayStartSpec) error,
+) error {
 	timeout := h.cfg.GatewayStartupTimeout
 	if timeout <= 0 {
 		timeout = defaultHermesStartupTimeout
@@ -81,8 +97,8 @@ func (h *healthChecker) WaitReady(ctx context.Context, spec gateway.GatewayStart
 	results := make(chan componentHealthResult, 2)
 	go func() {
 		results <- componentHealthResult{
-			component: "Hermes runtime",
-			err:       h.http.WaitReady(readyCtx, spec),
+			component: runtimeName,
+			err:       runtimeReady(readyCtx, spec),
 		}
 	}()
 	go func() {

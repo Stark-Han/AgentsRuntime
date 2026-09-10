@@ -100,12 +100,36 @@ func TestDesktopWebConfigMigratesAndPreservesUserData(t *testing.T) {
 	}
 }
 
+func TestDesktopWebConfigPersistsExistingTeamContract(t *testing.T) {
+	cfg, req, workspace := desktopWebConfigFixture(t)
+	req.Environment["CLAWMANAGER_TEAM_ENABLED"] = "true"
+	req.Environment["CLAWMANAGER_TEAM_CONFIG_JSON"] = `{"teamId":"42","memberId":"leader"}`
+	req.Environment["CLAWMANAGER_TEAM_SHARED_DIR"] = "/team"
+
+	if err := WriteGatewayConfig(cfg, req, workspace); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "team", "team.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual map[string]string
+	if err := json.Unmarshal(data, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if actual["teamId"] != "42" || actual["memberId"] != "leader" {
+		t.Fatalf("unexpected Team contract: %#v", actual)
+	}
+}
+
 func TestDesktopWebConfigDoesNotUseDeploymentLLMCredentials(t *testing.T) {
 	cfg, req, workspace := desktopWebConfigFixture(t)
 	cfg.LLMAPIKey, cfg.LLMAPIKeySet = "pod-global-token", true
 	cfg.LLMBaseURL = "http://global-provider.example"
 	t.Setenv("OPENAI_API_KEY", "pod-env-token")
 	t.Setenv("CLAWMANAGER_LLM_API_KEY", "pod-env-token")
+	req.Environment["CLAWMANAGER_TEAM_ENABLED"] = "true"
+	req.Environment["CLAWMANAGER_TEAM_CONFIG_JSON"] = `{"teamId":"42"}`
 	delete(req.Environment, "CLAWMANAGER_LLM_API_KEY")
 	if err := WriteGatewayConfig(cfg, req, workspace); err == nil || strings.Contains(err.Error(), "pod-env-token") {
 		t.Fatal("missing per-instance credentials did not fail safely")
