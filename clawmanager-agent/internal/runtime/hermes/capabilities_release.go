@@ -163,6 +163,8 @@ func desktopDigest(value []byte) string {
 // Keep this list aligned with the release assembler; additional artifacts are
 // welcome, but a manifest cannot omit the code/launcher that enforces the mode.
 var desktopRequiredArtifacts = []string{
+	"/usr/local/bin/start-hermes-lite-runtime", "/usr/local/bin/hermes-apply-runtime-config",
+	"/usr/local/share/clawmanager/hermes/skills/redis-team-protocol/SKILL.md", "/usr/local/share/clawmanager/hermes/skills/redis-team-protocol/skill.json",
 	"/usr/local/bin/start-hermes-lite-dashboard", "/usr/local/bin/clawmanager-agent", "/usr/local/bin/node", "/usr/local/bin/hermes-lite-entrypoint", "/usr/local/bin/python3.13",
 	"/usr/local/lib/libpython3.13.so.1.0",
 	"/opt/hermes-agent/hermes_cli/web_server.py", "/opt/hermes-agent/hermes_cli/runtime_provider.py", "/opt/hermes-agent/hermes_cli/lite_gateway_boundary.py", "/opt/hermes-agent/hermes_cli/lite_non_native.py", "/opt/hermes-agent/tui_gateway/server.py", "/opt/hermes-agent/tui_gateway/methods_session.py", "/opt/hermes-agent/model_tools.py",

@@ -15,6 +15,17 @@ import (
 	"time"
 )
 
+// Opt-in integration check, executed inside the built Lite image. Unlike unit
+// fixtures this exercises the real release assembler/Go verifier contract.
+func TestDesktopCapabilityActualImage(t *testing.T) {
+	if os.Getenv("HERMES_TEST_ACTUAL_IMAGE") != "1" { t.Skip("requires built Lite image") }
+	cfg := desktopCapabilityConfig(t)
+	cfg.GatewayCommand = NewProfile("hermes").GatewayCommand("")
+	if got := NewProfile("hermes").withVerifiedCapabilities(cfg, "/").HealthCapabilities(); got == nil || got.HermesDesktopWeb == nil {
+		t.Fatal("built Lite image did not expose verified Web capability")
+	}
+}
+
 // These reports/artifacts are synthetic unit fixtures, never production evidence.
 func desktopAcceptedReleaseFixture(t *testing.T) (string, desktopRelease) {
 	t.Helper()
