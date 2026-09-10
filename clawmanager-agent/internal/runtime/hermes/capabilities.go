@@ -54,7 +54,7 @@ func (p Profile) desktopConfigurationVerified(cfg gateway.Config) bool {
 	}
 	// The fixed managed Lite launcher identifies the deployment profile. Team
 	// membership belongs to individual gateway requests, not pod capabilities.
-	if len(cfg.GatewayCommand) != 1 || (cfg.GatewayCommand[0] != "start-hermes-lite-dashboard" && cfg.GatewayCommand[0] != "/usr/local/bin/start-hermes-lite-dashboard") {
+	if len(cfg.GatewayCommand) != 1 || (cfg.GatewayCommand[0] != "start-hermes-lite-dashboard" && cfg.GatewayCommand[0] != "/usr/local/bin/start-hermes-lite-dashboard" && cfg.GatewayCommand[0] != "start-hermes-lite-runtime" && cfg.GatewayCommand[0] != "/usr/local/bin/start-hermes-lite-runtime") {
 		return false
 	}
 	if cfg.ControlToken == "" || cfg.ReportToken == "" || !filepath.IsAbs(cfg.WorkspaceRoot) || !filepath.IsAbs(cfg.AgentDataDir) || cfg.GatewayPortBlockSize != 1 || cfg.GatewayPortStart < 1 || cfg.GatewayPortEnd > 65535 || cfg.GatewayPortEnd < cfg.GatewayPortStart || cfg.Capacity < 1 {

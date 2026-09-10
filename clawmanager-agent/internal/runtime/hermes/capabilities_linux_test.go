@@ -106,6 +106,8 @@ func TestDesktopCapabilityVerifiedCandidateDoesNotClaimSignedAcceptance(t *testi
 		t.Fatal(err)
 	}
 	cfg := desktopCapabilityConfig(t)
+	// Exercise the actual profile command used by deployed Web + Team images.
+	cfg.GatewayCommand = NewProfile("hermes").GatewayCommand("")
 	capabilities := NewProfile("hermes").withVerifiedCapabilities(cfg, root).HealthCapabilities()
 	if capabilities == nil {
 		t.Fatal("fully verified candidate omitted protocol compatibility")
