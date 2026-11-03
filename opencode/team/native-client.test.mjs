@@ -11,7 +11,8 @@ test("transport identities survive generation recovery and distinguish correctiv
  assert.deepEqual(nativeIdentity(identity), nativeIdentity({ ...identity, generation: 3 }));
  assert.notEqual(nativeIdentity(identity).message, nativeIdentity({ ...identity, messageId: "delivery-2" }).message);
  assert.notEqual(nativeIdentity(identity).session, nativeIdentity({ ...identity, memberId: "reviewer" }).session);
- assert.throws(() => nativeIdentity({ ...identity, generation: 0 }));
+ assert.deepEqual(nativeIdentity(identity), nativeIdentity({ ...identity, generation: 0 }));
+ assert.throws(() => nativeIdentity({ ...identity, generation: -1 }));
 });
 
 test("lost admission reply reuses exact native session and message identity", async () => {

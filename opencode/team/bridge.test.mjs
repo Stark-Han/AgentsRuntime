@@ -3,6 +3,16 @@ import assert from "node:assert/strict";
 import { createBridge } from "./bridge.mjs";
 import { nativeIdentity } from "./native-client.mjs";
 
+test("initial Pro generation zero is preserved and is rejected for a Lite or unidentified host", async () => {
+ const cfg = { enabled: true, teamId: "12", memberId: "writer" };
+ const protocol = { readChannelConfig: () => cfg, createRuntime: () => ({}) };
+ const environment = { CLAWMANAGER_GATEWAY_GENERATION: "0" };
+ await assert.rejects(createBridge({ protocol, native: {}, environment }), /identity unavailable/);
+ await assert.rejects(createBridge({ protocol, native: {}, environment: { ...environment, CLAWMANAGER_AGENT_ENABLED: "true" } }), /identity unavailable/);
+ const bridge = await createBridge({ protocol, native: {}, environment: { ...environment, CLAWMANAGER_AGENT_ENABLED: "true", INSTANCE_ID: "570" } });
+ await bridge.stop();
+});
+
 test("tools are bound to active native input and never to model supplied Team IDs", async () => {
  let receive, release; const sent = [];
  const cfg = { enabled: true, teamId: "12", memberId: "writer", embeddedTimeoutSeconds: 10 };

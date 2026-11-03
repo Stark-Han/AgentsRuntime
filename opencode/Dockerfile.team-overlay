@@ -1,0 +1,8 @@
+# Repackage the authoritative Team bridge on a verified native OpenCode base.
+# The governed native binary is installed/verified by Dockerfile.prebuilt next.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY opencode/team/ /usr/local/share/clawmanager/opencode-team/
+COPY plugins/openclaw-redis-team/dist/index.js /tmp/clawmanager-team-protocol-source.js
+RUN node /usr/local/share/clawmanager/opencode-team/build-protocol.mjs /usr/local/share/clawmanager/opencode-team/protocol.mjs /tmp/clawmanager-team-protocol-source.js \
+ && rm /tmp/clawmanager-team-protocol-source.js

@@ -15,6 +15,18 @@ test("the delivery package imports the authoritative protocol without an OpenCla
   assert.equal(typeof protocol.createRuntime, "function");
   assert.equal(typeof protocol.startConsumer, "function");
   assert.equal(typeof protocol.RedisClient, "function");
+  const original = process.env.CLAWMANAGER_RUNTIME_TYPE;
+  try {
+   delete process.env.CLAWMANAGER_RUNTIME_TYPE;
+   let cfg = protocol.readChannelConfig({});
+   assert.equal(protocol.taskEvent(cfg, "task_progress", {}).runtime, "openclaw");
+   process.env.CLAWMANAGER_RUNTIME_TYPE = "opencode";
+   cfg = protocol.readChannelConfig({});
+   assert.equal(protocol.taskEvent(cfg, "task_progress", {}).runtime, "opencode");
+  } finally {
+   if (original === undefined) delete process.env.CLAWMANAGER_RUNTIME_TYPE;
+   else process.env.CLAWMANAGER_RUNTIME_TYPE = original;
+  }
   const source = await fs.readFile(output, "utf8");
   assert.ok(!source.includes('from "openclaw/plugin-sdk'));
   assert.ok(!source.includes("export default definePluginEntry"));

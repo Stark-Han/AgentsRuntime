@@ -34,7 +34,8 @@ export const Plugin = {
   const port = Number(process.env.CLAWMANAGER_TEAM_BRIDGE_PORT)
   const token = process.env.CLAWMANAGER_TEAM_BRIDGE_TOKEN
   const generation = Number(process.env.CLAWMANAGER_GATEWAY_GENERATION)
-  if (!Governance.enabled || !Number.isInteger(port) || port < 1 || port > 65535 || !token || !Number.isSafeInteger(generation) || generation < 1)
+  const managedPro = process.env.CLAWMANAGER_AGENT_ENABLED === "true" && /^[1-9][0-9]*$/.test(process.env.INSTANCE_ID || "")
+  if (!Governance.enabled || !Number.isInteger(port) || port < 1 || port > 65535 || !token || !Number.isSafeInteger(generation) || generation < 0 || generation === 0 && !managedPro)
    return yield* Effect.die(new Error("OpenCode Team adapter is not ready."))
   const permission = yield* Permission.Service
   yield* ctx.tool.transform(editor => {

@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test"
 import { Effect } from "effect"
 
 const calls: Record<string, unknown>[] = []
+const generation = process.env.TEAM_TEST_GENERATION === "0" ? 0 : 4
 let denied = false
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
  const path = new URL(request.url).pathname
@@ -10,12 +11,12 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
   calls.push(await request.json() as Record<string, unknown>)
   return denied ? Response.json({ error: "private-canary" }, { status: 409 }) : Response.json({ ok: true, result: { accepted: true } })
  }
- if (path.endsWith("capabilities")) return Response.json({ protocol: 1, generation: 4, task_identity_required: true })
+ if (path.endsWith("capabilities")) return Response.json({ protocol: 1, generation, task_identity_required: true })
  return Response.json({ revoked: false, finished: false, runtime_acknowledged: false })
 } })
 const values = { CLAWMANAGER_TEAM_ENABLED: "true", CLAWMANAGER_TEAM_ID: "12", CLAWMANAGER_MODEL_GOVERNANCE_PROTOCOL: "1", CLAWMANAGER_LLM_BASE_URL: `http://127.0.0.1:${server.port}`, CLAWMANAGER_LLM_API_KEY: "test-key", CLAWMANAGER_GATEWAY_GENERATION: "4", CLAWMANAGER_TEAM_BRIDGE_PORT: String(server.port), CLAWMANAGER_TEAM_BRIDGE_TOKEN: "bridge-test" }
-const previous = new Map(Object.keys(values).map(key => [key, process.env[key]]))
-Object.assign(process.env, values)
+const previous = new Map([...Object.keys(values), "CLAWMANAGER_AGENT_ENABLED", "INSTANCE_ID"].map(key => [key, process.env[key]]))
+Object.assign(process.env, values, { CLAWMANAGER_GATEWAY_GENERATION: String(generation), ...(generation === 0 ? { CLAWMANAGER_AGENT_ENABLED: "true", INSTANCE_ID: "570" } : {}) })
 const { Governance } = await import("../src/clawmanager-governance.js")
 const { ClawManagerTeamTools } = await import("../src/clawmanager-team-tools.js")
 const { Agent } = await import("@opencode/core/agent")
@@ -37,7 +38,7 @@ test("native Team tools inherit task identity and preserve existing optional wor
   const input = { status: "succeeded", summary: "delivered", phaseDispositions: [{ phaseId: "P1", decision: "skipped", reason: "not needed" }] }
   yield* run(input)
   expect(calls).toHaveLength(1)
-  expect(calls[0]).toMatchObject({ name: "team_complete_task", arguments: input, sessionID, taskID: "msg_team_input", generation: 4, callID: "call_team" })
+  expect(calls[0]).toMatchObject({ name: "team_complete_task", arguments: input, sessionID, taskID: "msg_team_input", generation, callID: "call_team" })
   expect((yield* Effect.exit(run(input, Session.ID.make("ses_other"))))._tag).toBe("Failure")
   expect(calls).toHaveLength(1)
   denied = true

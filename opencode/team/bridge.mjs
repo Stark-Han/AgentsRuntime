@@ -12,7 +12,10 @@ export async function createBridge({ protocol, native, environment = process.env
  const cfg = protocol.readChannelConfig({});
  const runtime = protocol.createRuntime({ config: {}, logger: log });
  const generation = Number(environment.CLAWMANAGER_GATEWAY_GENERATION);
- if (!cfg.enabled || !cfg.teamId || !cfg.memberId || !Number.isSafeInteger(generation) || generation < 1) throw new Error("OpenCode Team identity unavailable");
+ // Pro's initial instance generation is zero; Lite Gateway generations start
+ // at one. Keep the original generation for governance and fencing.
+ const managedPro = environment.CLAWMANAGER_AGENT_ENABLED === "true" && /^[1-9][0-9]*$/.test(environment.INSTANCE_ID || "");
+ if (!cfg.enabled || !cfg.teamId || !cfg.memberId || !Number.isSafeInteger(generation) || generation < 0 || generation === 0 && !managedPro) throw new Error("OpenCode Team identity unavailable");
  const token = randomBytes(32).toString("hex");
  let active = null, stopped = false, nativeGone = false, consumer;
  const abort = new AbortController();

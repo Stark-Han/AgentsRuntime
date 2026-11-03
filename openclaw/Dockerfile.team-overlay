@@ -1,16 +1,22 @@
-# Preserve the proven OpenClaw core/data adapters when only the Team transport
-# changes. BASE_IMAGE must be the reviewed immutable serving image.
+# Preserve the proven TEAM OpenClaw core/data adapters when only the transport
+# changes. BASE_IMAGE must be an immutable Team-compatible serving image;
+# personal serving/upgrade images have a different control-plane contract.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 ARG RUNTIME_REVISION
-COPY plugins/openclaw-redis-team/ /defaults/.openclaw/extensions/redis-team/
+COPY plugins/openclaw-redis-team/ /tmp/clawmanager-team-overlay/
 RUN set -eu; \
     core="$(dirname "$(readlink -f "$(command -v openclaw)")")"; \
     test -f "$core/package.json"; \
+    test -d "$core/dist/extensions/redis-team"; \
+    cp -a /tmp/clawmanager-team-overlay/. "$core/dist/extensions/redis-team/"; \
+    mkdir -p /defaults/.openclaw/extensions/redis-team; \
+    cp -a /tmp/clawmanager-team-overlay/. /defaults/.openclaw/extensions/redis-team/; \
     mkdir -p /defaults/.openclaw/extensions/redis-team/node_modules; \
     ln -sfn "$core" /defaults/.openclaw/extensions/redis-team/node_modules/openclaw; \
     node --check /defaults/.openclaw/extensions/redis-team/dist/index.js; \
     node --input-type=module -e 'const m=await import("/defaults/.openclaw/extensions/redis-team/dist/index.js");if(!m.default)process.exit(1)'; \
-    openclaw --version | grep '2026.10.2'
+    openclaw --version | grep '2026.10.2'; \
+    rm -rf /tmp/clawmanager-team-overlay
 ENV CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION=0.3.1
 LABEL io.clawmanager.team-source-revision="${RUNTIME_REVISION}"

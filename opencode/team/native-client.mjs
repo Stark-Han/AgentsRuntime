@@ -6,7 +6,7 @@ export class NativeRequestError extends Error {
 
 // Identity is supplied by the authenticated Team transport, never by model tools.
 export function nativeIdentity({ teamId, memberId, taskId, messageId, generation }) {
-  if (![teamId, memberId, taskId, messageId].every(v => typeof v === "string" && v.length > 0 && v.length <= 512) || !Number.isSafeInteger(generation) || generation < 1)
+  if (![teamId, memberId, taskId, messageId].every(v => typeof v === "string" && v.length > 0 && v.length <= 512) || !Number.isSafeInteger(generation) || generation < 0)
     throw new Error("Invalid Team execution identity");
   const hash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
   return {

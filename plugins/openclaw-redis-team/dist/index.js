@@ -560,6 +560,8 @@ function readChannelConfig(cfg, accountId = "default") {
   const env = process.env;
   const fromEnv = account.fromEnv !== false;
   return {
+    // Host-owned identity; never infer a Runtime from model tool arguments.
+    runtimeType: trim(env.CLAWMANAGER_RUNTIME_TYPE) === "opencode" ? "opencode" : "openclaw",
     enabled: boolFrom(account.enabled ?? (fromEnv ? env.CLAWMANAGER_TEAM_ENABLED : undefined), false),
     redisUrl:
       trim(account.redisUrl) || (fromEnv ? trim(env.CLAWMANAGER_TEAM_REDIS_URL) : ""),
@@ -1978,7 +1980,7 @@ async function writeLocalStatus(cfg, patch = {}) {
       memberId: cfg.memberId,
       role: cfg.role,
       liveness: "online",
-      runtime: "openclaw",
+      runtime: cfg.runtimeType || "openclaw",
       runtimeStatus: "running",
       availability: "idle",
       monitorObservationVersion: 1,
@@ -1992,6 +1994,7 @@ async function writeLocalStatus(cfg, patch = {}) {
       memberId: cfg.memberId,
       role: cfg.role,
       protocolVersion: PROTOCOL_VERSION,
+      runtime: cfg.runtimeType || "openclaw",
       capabilities: [...RUNTIME_CAPABILITIES],
       lastSeenAt: nowIso(),
     },
@@ -3773,7 +3776,7 @@ function eventFor(cfg, event, extra = {}) {
       memberId: cfg.memberId,
       member_id: cfg.memberId,
       role: cfg.role,
-      runtime: "openclaw",
+      runtime: cfg.runtimeType || "openclaw",
       runtimeStatus: "running",
       availability: "idle",
       at: nowIso(),
