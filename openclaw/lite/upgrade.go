@@ -21,7 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iamlovingit/clawmanager-agent/gateway"
 	"github.com/iamlovingit/clawmanager-agent/openclawcompat"
+	"github.com/iamlovingit/clawmanager-agent/workspaceio"
 )
 
 type openClawSessionCatalog struct {
@@ -562,6 +564,15 @@ func (m *upgradeService) runOpenClawCommandInHome(ctx context.Context, dir, home
 		overrides["CLAWMANAGER_OPENCLAW_DOCTOR_MIGRATION"] = "1"
 	}
 	cmd.Env = m.upgradeCommandEnv(overrides)
+	// Legacy pools also drop to the instance UID. Their probe is below private
+	// supervisor capsule parents, just like the isolated launcher's narrow mount.
+	// Permit search through those trusted parents without exposing or changing
+	// ownership of controller receipts. Only the probe itself is instance-owned.
+	if runtime.GOOS == "linux" && !m.cfg.IsolatedLifecycle && m.io != nil && filepath.Clean(m.io.controlRoot()) != filepath.Clean(m.io.pool) && gateway.PathWithin(m.io.controlRoot(), dir) {
+		if err := workspaceio.AllowManagementTraversal(m.io.pool, m.io.controlRoot()); err != nil {
+			return err
+		}
+	}
 	configureGatewayCommand(cmd, req.UID, req.GID)
 	if !m.cfg.IsolatedLifecycle {
 		inheritUpgradeOperationFence(ctx, cmd)
