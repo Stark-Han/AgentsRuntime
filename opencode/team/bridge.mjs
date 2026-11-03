@@ -6,6 +6,15 @@ import { NativeClient, NativeRequestError, nativeIdentity } from "./native-clien
 const methods = Object.freeze({ team_send: "send", team_status: "status", team_update_progress: "updateProgress", team_complete_task: "completeTask", team_artifact_write: "artifactWrite", team_artifact_read: "artifactRead", team_artifact_list: "artifactList", team_artifact_mkdir: "artifactMkdir", team_artifact_preview: "artifactPreview" });
 const equal = (a, b) => typeof a === "string" && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
+// Normalize only an explicit business completion call, never native tool state
+// or prose. Validation happens before reserving a call ID or publishing events.
+function completionArguments(args) {
+ const status = typeof args.status === "string" ? args.status.trim().toLowerCase() : "";
+ const canonical = ({ completed: "succeeded", done: "succeeded", success: "succeeded" })[status] || status;
+ if (!["succeeded", "failed", "cancelled"].includes(canonical) || typeof args.summary !== "string" || !args.summary.trim()) return null;
+ return { ...args, status: canonical };
+}
+
 // One bridge belongs to one supervised member process. Protocol/state semantics
 // come from the same source as the existing Team adapter.
 export async function createBridge({ protocol, native, environment = process.env, log = console }) {
@@ -39,20 +48,29 @@ export async function createBridge({ protocol, native, environment = process.env
    if (!current || current.interrupted || stopped || input.sessionID !== current.ids.session || input.taskID !== current.ids.message || input.generation !== generation || !methods[input.name]) return reply(409, { error: "Team execution identity is not active" });
    if (!input.arguments || typeof input.arguments !== "object" || Array.isArray(input.arguments)) return reply(422, { error: "Invalid Team tool arguments" });
    if (typeof input.callID !== "string" || !input.callID || input.callID.length > 512) return reply(422, { error: "Missing native tool call identity" });
+   if (input.name === "team_complete_task") {
+    const args = completionArguments(input.arguments);
+    if (!args) return reply(422, { error_code: "TEAM_INVALID_COMPLETION", error: "Use status=succeeded, failed or cancelled and a non-empty summary. Assignment identity is inherited; a file is not required for a text answer." });
+    input.arguments = args;
+   }
    const method = methods[input.name];
    const digest = createHash("sha256").update(JSON.stringify([input.name, input.arguments])).digest("hex");
    let call = current.calls.get(input.callID);
    if (call && call.digest !== digest) return reply(409, { error: "Conflicting native tool replay" });
    if (!call) {
     if (current.calls.size >= 1024) return reply(409, { error: "Native tool call limit reached" });
-    call = { digest, result: Promise.resolve().then(() => runtime[method](method === "status" ? input.arguments.memberId : input.arguments)) };
+    call = { digest, result: Promise.resolve().then(() => method === "status" && runtime.statusContext
+     ? runtime.statusContext(input.arguments.memberId)
+     : runtime[method](method === "status" ? input.arguments.memberId : input.arguments)) };
     // Retain both successful and uncertain outcomes. A lost HTTP reply must not
     // execute the same native tool call twice. Cross-process business retries
     // remain protected by the authoritative Team protocol's durable receipts.
     current.calls.set(input.callID, call);
    }
    const value = await call.result;
-   reply(200, { ok: true, result: value });
+   reply(200, method === "status" && runtime.statusContext
+    ? { ok: true, result: value.status, workflow: value.workflow }
+    : { ok: true, result: value });
   } catch {
    // Runtime/model secrets and source URLs are never returned in tool errors.
    reply(500, { error: "Team tool failed; inspect the current work before retrying" });

@@ -16,11 +16,16 @@ const Input = Schema.StructWithRest(Schema.Struct({
  reviewVerdict: Schema.optional(Schema.String), reviewedAssignmentId: Schema.optional(Schema.String),
  reviewedRevision: Schema.optional(Schema.Number), reviewedArtifactRefs: Schema.optional(Schema.Array(Schema.String)),
 }), [Schema.Record(Schema.String, Schema.Unknown)])
+const CompletionInput = Schema.StructWithRest(Schema.Struct({
+ status: Schema.Literals(["succeeded", "failed", "cancelled", "completed", "done", "success"]),
+ summary: Schema.String,
+}), [Schema.Record(Schema.String, Schema.Unknown)])
+class TeamArgumentError extends Error {}
 const descriptions = {
  team_send: "Send a real assignment, handoff, question or blocker to a Team member. Do not repeat an existing assignment. Use team_complete_task for delivery.",
- team_status: "Read current Team member status.",
+ team_status: "Read current Team member status and the current root's accepted assignment results. Shared task files are dispatch snapshots, not the current ledger. Do not reassign work already accepted or running.",
  team_update_progress: "Report actual progress with status and summary. Active assignment identity is inherited automatically.",
- team_complete_task: "Submit actual work using status and summary, full answer in resultMarkdown and actual artifactRefs when applicable. Ordinary replies do not complete Team work. Worker delivery does not complete the Leader root. Reuse existing results when correcting a missed receipt.",
+ team_complete_task: "Submit actual work using status=succeeded, failed or cancelled and summary. Completed/done/success are accepted success aliases. Put the full answer in resultMarkdown and actual artifactRefs only when applicable; a text answer needs no file. Assignment identity is inherited. Ordinary replies do not complete Team work. Worker delivery does not complete the Leader root. Reuse existing results when correcting a missed receipt.",
  team_artifact_read: "Read a UTF-8 file in this Team shared workspace using path.",
  team_artifact_write: "Atomically write a UTF-8 Team artifact using path and content.",
  team_artifact_list: "List this Team's artifacts using an optional path.",
@@ -40,7 +45,7 @@ export const Plugin = {
   const permission = yield* Permission.Service
   yield* ctx.tool.transform(editor => {
    for (const [name, description] of Object.entries(descriptions)) editor.add({
-    name, description, options: { codemode: false }, input: Input, output: Schema.Unknown,
+    name, description, options: { codemode: false }, input: name === "team_complete_task" ? CompletionInput : Input, output: Schema.Unknown,
     execute: (args, context) => Effect.gen(function* () {
      yield* permission.assert({ action: name, resources: [process.env.CLAWMANAGER_TEAM_ID || ""], save: ["*"], metadata: {}, sessionID: context.sessionID, agent: context.agent, source: { type: "tool", messageID: context.messageID, id: context.id } }).pipe(Effect.mapError(() => new ToolFailure({ message: "Team tool permission denied." })))
      const identity = yield* Governance.headers
@@ -53,7 +58,6 @@ export const Plugin = {
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ name, arguments: args, sessionID: context.sessionID, taskID: identity["X-ClawManager-Task-ID"], generation, callID: context.id }),
        })
-       if (!response.ok) { await response.body?.cancel(); throw new Error() }
        if (!response.body) throw new Error()
        const reader = response.body.getReader()
        const chunks: Uint8Array[] = []
@@ -66,10 +70,16 @@ export const Plugin = {
          if (size > 4 * 1024 * 1024) throw new Error()
          chunks.push(value)
         }
-        return JSON.parse(Buffer.concat(chunks).toString("utf8"))
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+        if (!response.ok) {
+         if (response.status === 422 && body?.error_code === "TEAM_INVALID_COMPLETION")
+          throw new TeamArgumentError("Use status=succeeded, failed or cancelled and a non-empty summary. Task identity is inherited; a text answer needs no file.")
+         throw new Error()
+        }
+        return body
        } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
       },
-      catch: () => new ToolFailure({ message: "Team operation failed or result is unconfirmed. Inspect the original work before retrying." }),
+      catch: error => new ToolFailure({ message: error instanceof TeamArgumentError ? error.message : "Team operation failed or result is unconfirmed. Inspect the original work before retrying." }),
      })
      return { output, content: [{ type: "text" as const, text: JSON.stringify(output) }] }
     }),

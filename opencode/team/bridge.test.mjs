@@ -45,3 +45,54 @@ test("tools are bound to active native input and never to model supplied Team ID
   assert.equal((await tool(input)).status, 409);
  } finally { await bridge.stop(); }
 });
+
+test("completion aliases are normalized before effects and validation errors remain actionable", async () => {
+ let receive, release; const delivered = [];
+ const cfg = { enabled: true, teamId: "12", memberId: "writer", embeddedTimeoutSeconds: 10 };
+ const runtime = {
+  isTaskTerminal: async () => true, withActiveEnvelope: async (_, fn) => fn(),
+  completeTask: async args => {
+   if (!["succeeded", "failed", "cancelled"].includes(args.status)) throw Error("team_complete_task status must be succeeded, failed or cancelled");
+   if (args.summary === "uncertain") throw Error("private-token-canary");
+   delivered.push(args); return { decision: "accepted" };
+  },
+  statusContext: async () => ({ status: [{ memberId: "writer" }], workflow: { ledgerVersion: 7, available: true } }),
+ };
+ const protocol = { readChannelConfig: () => cfg, createRuntime: () => runtime, workflowReminderIsStale: async () => false,
+  isContextOnlyEnvelope: () => true, appendLeaderTeamContext: async t => t, appendRedisTeamCompletionGuidance: t => t,
+  startConsumer: async (_, fn) => { receive = fn; return { stop: async () => {} }; } };
+ const native = { admit: () => new Promise(resolve => { release = resolve; }), readLog: async () => 0,
+  api: async resource => ({ data: resource.endsWith("/inbox") ? [] : {} }), interrupt: async () => {} };
+ const bridge = await createBridge({ protocol, native, environment: { CLAWMANAGER_GATEWAY_GENERATION: "2" } });
+ await bridge.start();
+ const running = receive({ taskId: "task-1", messageId: "delivery-1", text: "work" });
+ await new Promise(resolve => setTimeout(resolve, 10));
+ const ids = nativeIdentity({ teamId: "12", memberId: "writer", taskId: "task-1", messageId: "delivery-1", generation: 2 });
+ const call = (id, args, name = "team_complete_task") => fetch(`http://127.0.0.1:${bridge.port}/tool`, {
+  method: "POST", headers: { Authorization: `Bearer ${bridge.token}`, "Content-Type": "application/json" },
+  body: JSON.stringify({ name, callID: id, sessionID: ids.session, taskID: ids.message, generation: 2, arguments: args }),
+ });
+ try {
+  for (const status of ["waiting", "unknown", ""]) {
+   const response = await call("correctable", { status, summary: "ready" });
+   assert.equal(response.status, 422);
+   assert.equal((await response.json()).error_code, "TEAM_INVALID_COMPLETION");
+  }
+  assert.equal(delivered.length, 0);
+  for (const status of ["completed", "done", "success", "succeeded", "failed", "cancelled"]) {
+   const args = { status, summary: "ready", workflowFinal: false };
+   assert.equal((await call(status, args)).status, 200);
+   assert.equal((await call(status, args)).status, 200);
+  }
+  assert.equal(delivered.length, 6);
+  assert.deepEqual(delivered.map(x => x.status), ["succeeded", "succeeded", "succeeded", "succeeded", "failed", "cancelled"]);
+  assert.ok(delivered.every(x => x.workflowFinal === false && !x.taskId && !x.artifactRefs));
+  assert.equal((await call("correctable", { status: "done", summary: "ready" })).status, 200);
+  const context = await (await call("status", {}, "team_status")).json();
+  assert.deepEqual(context.result, [{ memberId: "writer" }]);
+  assert.equal(context.workflow.ledgerVersion, 7);
+  const failed = await call("uncertain", { status: "done", summary: "uncertain" });
+  assert.equal(failed.status, 500);
+  assert.ok(!(await failed.text()).includes("private-token-canary"));
+ } finally { release(); await running; await bridge.stop(); }
+});

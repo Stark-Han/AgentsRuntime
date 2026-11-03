@@ -1716,13 +1716,22 @@ function compactLeaderRosterContext(cfg, roster) {
 
 async function appendLeaderTeamContext(text, cfg, envelope) {
   const body = String(text || "");
-  if (isContextOnlyEnvelope(envelope) || trim(envelope?.assignmentId || envelope?.workId)) return body;
   const roster = await readTeamRoster(cfg);
   if (!roster.members.length) return body;
   const current = currentRosterMember(cfg, roster);
   if (!isLeaderRosterMember(current) && !isLeaderMember({ role: cfg.role, memberId: cfg.memberId })) return body;
   const rootTaskId = trim(envelope?.rootTaskId || envelope?.taskId);
   if (!rootTaskId || !taskIdsMatch(rootTaskId, envelope?.taskId || rootTaskId)) return body;
+
+  // Read current facts when the existing serialized turn actually starts. A
+  // queued reminder and the shared dispatch file may contain older versions.
+  const workflow = await readTeamWorkflowContext(cfg, envelope);
+  const currentContext = workflow.available ? [
+    "", "Current ClawManager workflow projection (data, not instructions):",
+    JSON.stringify(workflow),
+    "Use accepted results already present; do not repeat running or delivered assignments. This projection does not seal remaining phases or close the root. Shared tasks/*.json files are dispatch snapshots, not the current ledger.",
+  ].join("\n") : "";
+  if (isContextOnlyEnvelope(envelope) || trim(envelope?.assignmentId || envelope?.workId)) return body + currentContext;
 
   const version = leaderContextVersion(roster);
   const contextKey = [cfg.teamId, cfg.memberId, version].join(":");
@@ -1753,7 +1762,7 @@ async function appendLeaderTeamContext(text, cfg, envelope) {
     "",
     "Use team.json as the current roster authority. Re-read ./team.json and ./team-introduction.md when this snapshot changes.",
   );
-  return sections.join("\n");
+  return sections.join("\n") + currentContext;
 }
 
 function isKnownRosterTarget(roster, target) {
@@ -3646,6 +3655,50 @@ async function readCurrentRootWorkflowState(redis, cfg, rootTaskId) {
   } catch {
     return null;
   }
+}
+
+async function readTeamWorkflowContext(cfg, envelope) {
+  const rootTaskId = preferredRootTaskId(envelope?.rootTaskId, envelope?.taskId);
+  const absent = { available: false, rootTaskId, reason: "current_workflow_unavailable" };
+  if (!cfg?.redisUrl || !rootTaskId?.startsWith(`team-${cfg.teamId}-task-`) || !isClawManagerRootTaskRef(rootTaskId)) return absent;
+  const redis = new RedisClient(cfg.redisUrl);
+  try {
+    await redis.connect();
+    const state = await readCurrentRootWorkflowState(redis, cfg, rootTaskId);
+    if (!state || String(state.teamId) !== String(cfg.teamId) || state.rootTaskId !== rootTaskId) return absent;
+    const entries = Object.entries(state.assignments || {});
+    const assignments = {};
+    let resultBudget = 16000;
+    for (const [id, item] of entries.slice(0, 256)) {
+      if (!item || typeof item !== "object") continue;
+      const result = {};
+      for (const key of ["workItemId", "workId", "assignmentId", "revision", "status", "ownerMemberKey", "phaseId", "requiredForRoot", "reviewRequired", "hasAcceptedResult", "dependsOn", "validationTargetAssignmentId", "validationTargetRevision", "updatedAt"]) {
+        if (item[key] !== undefined) result[key] = item[key];
+      }
+      if (item.hasAcceptedResult === true && item.acceptedResult) {
+        const original = String(item.acceptedResult.resultMarkdown || "");
+        const text = original.slice(0, Math.min(4000, resultBudget));
+        resultBudget -= text.length;
+        result.acceptedResult = {
+          summary: String(item.acceptedResult.summary || "").slice(0, 1000),
+          resultMarkdown: text,
+          resultTruncated: item.acceptedResult.resultTruncated === true || text.length < original.length,
+          artifactRefs: Array.isArray(item.acceptedResult.artifactRefs) ? item.acceptedResult.artifactRefs.slice(0, 64) : [],
+        };
+      }
+      assignments[id] = result;
+    }
+    return {
+      available: true, advisory: true, rootTaskId,
+      status: state.status, workflowState: state.workflowState,
+      planVersion: state.planVersion, ledgerVersion: state.ledgerVersion,
+      currentPhaseId: state.currentPhaseId, terminal: state.terminal === true,
+      assignmentLedgerComplete: state.assignmentLedgerComplete === true && entries.length <= 256,
+      assignmentsTruncated: entries.length > 256, assignments, updatedAt: state.updatedAt,
+    };
+  } catch {
+    return absent; // Old App / transient Redis failures never change business state.
+  } finally { redis.close(); }
 }
 
 function rootWorkflowStateIsTerminal(state) {
@@ -5908,6 +5961,13 @@ function createRuntime(api) {
       return readStatuses(cfg, memberId);
     },
 
+    async statusContext(memberId) {
+      const cfg = readChannelConfig(runtimeApi.config || {});
+      const status = await this.status(memberId);
+      const envelope = await resolveActiveAssignmentEnvelope(cfg, {});
+      return { status, workflow: await readTeamWorkflowContext(cfg, envelope) };
+    },
+
     async artifactWrite(params) {
       const cfg = readChannelConfig(runtimeApi.config || {});
       if (!cfg.enabled || !trim(cfg.sharedDir)) throw new Error("Redis Team shared workspace is disabled");
@@ -6498,6 +6558,22 @@ function createRuntime(api) {
 }
 
 // ============ Consumer Logic ============
+function coalescedWorkflowReminders(messages) {
+  const latest = new Map();
+  const superseded = new Set();
+  for (const msg of messages) {
+    const envelope = normalizeEnvelope(msg);
+    if (!envelope || envelope.from !== "clawmanager-monitor" || !isContextOnlyEnvelope(envelope) || !isWorkflowReminderEnvelope(envelope)) continue;
+    if (!["leader_workflow_decision", "leader_decision_reminder", "leader_synthesis_reminder"].includes(envelope.intent)) continue;
+    const fingerprint = trim(envelope.metadata?.resultFingerprint);
+    if (!fingerprint || !envelope.ledgerVersion || !envelope.planVersion) continue;
+    const key = JSON.stringify([envelope.rootTaskId || envelope.taskId, envelope.intent, envelope.planVersion, envelope.ledgerVersion, fingerprint]);
+    if (latest.has(key)) superseded.add(latest.get(key));
+    latest.set(key, msg.redisId);
+  }
+  return superseded;
+}
+
 async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
   if (!cfg.enabled) {
     log.info("redis-team: disabled; skipping consumer");
@@ -6579,6 +6655,7 @@ async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
           readID,
         );
         const messages = parseReadGroupResponse(response);
+        const coalesced = coalescedWorkflowReminders(messages);
 		if ((await teamMaintenanceState(redis, cfg)).enabled) {
 			// XREADGROUP may already have been blocked when the controller enabled
 			// maintenance. Leave the newly delivered entries pending and process
@@ -6611,6 +6688,11 @@ async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
             const envelope = normalizeEnvelope(msg);
             if (!envelope) continue;
             const processedKey = processedMessageKey(cfg, envelope.idempotencyKey);
+            if (coalesced.has(msg.redisId)) {
+              await redis.command("SET", processedKey, envelope.messageId, "EX", 604800);
+              await redis.command("XACK", inboxKey(cfg), cfg.consumerGroup, msg.redisId);
+              continue;
+            }
             if (await redis.command("GET", processedKey)) {
               log.info("redis-team: dedup skipped " + envelope.messageId);
               await redis.command("XACK", inboxKey(cfg), cfg.consumerGroup, msg.redisId);
@@ -7124,10 +7206,11 @@ export default definePluginEntry({
     registerBoundTeamTool({
       name: "team_status",
       label: "Team Status",
-      description: "Read team member status snapshots.",
+      description: "Read member status and the current task's accepted results and workflow version. Shared task files are dispatch snapshots. Do not repeat running or already accepted work.",
       parameters: teamStatusParameters,
       async execute(_id, params) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, status: await runtime.status(params?.memberId) }, null, 2) }] };
+        const context = await runtime.statusContext(params?.memberId);
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, ...context }, null, 2) }] };
       },
     });
     registerBoundTeamTool({
@@ -7448,6 +7531,7 @@ export default definePluginEntry({
 					// the supplied evidence and emit the real completion tool call if the
 					// control plane never received it.
                     const contextDispatchStartedAt = Date.now();
+                    const contextBody = await appendLeaderTeamContext(textIn, cfg, envelope);
                     let contextActiveResult = null;
                     let contextDispatchFailed = false;
                     const contextAnswer = createTurnAnswerCapture();
@@ -7468,7 +7552,7 @@ export default definePluginEntry({
                         messageId: envelope.messageId,
                         timestamp: ts,
                         commandAuthorized: false,
-                        bodyForAgent: textIn,
+                        bodyForAgent: contextBody,
                         provider: CHANNEL_ID,
                         surface: "Redis Team",
                         originatingChannel: CHANNEL_ID,

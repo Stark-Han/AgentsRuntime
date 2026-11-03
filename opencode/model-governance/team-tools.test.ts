@@ -4,12 +4,13 @@ import { Effect } from "effect"
 const calls: Record<string, unknown>[] = []
 const generation = process.env.TEAM_TEST_GENERATION === "0" ? 0 : 4
 let denied = false
+let invalid = false
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
  const path = new URL(request.url).pathname
  if (path === "/tool") {
   if (request.headers.get("authorization") !== "Bearer bridge-test") return new Response(null, { status: 403 })
   calls.push(await request.json() as Record<string, unknown>)
-  return denied ? Response.json({ error: "private-canary" }, { status: 409 }) : Response.json({ ok: true, result: { accepted: true } })
+  return invalid ? Response.json({ error_code: "TEAM_INVALID_COMPLETION", error: "private-canary" }, { status: 422 }) : denied ? Response.json({ error: "private-canary" }, { status: 409 }) : Response.json({ ok: true, result: { accepted: true } })
  }
  if (path.endsWith("capabilities")) return Response.json({ protocol: 1, generation, task_identity_required: true })
  return Response.json({ revoked: false, finished: false, runtime_acknowledged: false })
@@ -38,9 +39,19 @@ test("native Team tools inherit task identity and preserve existing optional wor
   const input = { status: "succeeded", summary: "delivered", phaseDispositions: [{ phaseId: "P1", decision: "skipped", reason: "not needed" }] }
   yield* run(input)
   expect(calls).toHaveLength(1)
+  yield* run({ status: "done", summary: "plain text answer" })
+  expect(calls).toHaveLength(2)
+  invalid = true
+  const invalidResult = yield* Effect.exit(run({ status: "succeeded", summary: "" }))
+  expect(invalidResult._tag).toBe("Failure")
+  expect(JSON.stringify(invalidResult)).toContain("non-empty summary")
+  expect(JSON.stringify(invalidResult)).not.toContain("private-canary")
+  invalid = false
   expect(calls[0]).toMatchObject({ name: "team_complete_task", arguments: input, sessionID, taskID: "msg_team_input", generation, callID: "call_team" })
   expect((yield* Effect.exit(run(input, Session.ID.make("ses_other"))))._tag).toBe("Failure")
-  expect(calls).toHaveLength(1)
+  expect(calls).toHaveLength(3)
+  expect((yield* Effect.exit(run({ status: "waiting", summary: "not done" })))._tag).toBe("Failure")
+  expect(calls).toHaveLength(3)
   denied = true
   const result = yield* Effect.exit(run(input))
   expect(result._tag).toBe("Failure")
