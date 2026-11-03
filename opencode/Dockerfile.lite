@@ -2,6 +2,7 @@
 # Build from the AgentsRuntime repository root; the runtime composes the shared core.
 ARG GO_BUILDER_IMAGE=golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81
 ARG NODE_BASE_IMAGE=node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+ARG BUN_BUILD_IMAGE=oven/bun:1.4.2
 FROM --platform=$BUILDPLATFORM ${GO_BUILDER_IMAGE} AS agent-builder
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -13,6 +14,14 @@ RUN go mod download
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w -X main.version=${AGENT_VERSION}" \
     -o /out/clawmanager-agent ./cmd/opencode-lite-agent
+
+FROM ${BUN_BUILD_IMAGE} AS native-team-builder
+USER root
+ARG TARGETARCH
+RUN command -v git && command -v python3 && command -v gcc && command -v g++ && command -v make \
+ || (apt-get update && apt-get install -y --no-install-recommends git python3 build-essential ca-certificates)
+COPY opencode/model-governance/ /governance/
+RUN bash /governance/build-native.sh
 
 # Node/npm are user development and package tools, provided by pinned Debian slim.
 FROM ${NODE_BASE_IMAGE}
@@ -30,24 +39,12 @@ RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 instal
     procps python3 python3-pip ripgrep tar tini unzip util-linux xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN set -eux; \
-    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
-    case "${arch}" in \
-        amd64|x86_64) oc_arch="x64" ;; \
-        arm64|aarch64) oc_arch="arm64" ;; \
-        *) echo "Unsupported architecture for OpenCode: ${arch}" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://registry.npmjs.org/@opencode/cli-linux-${oc_arch}/-/cli-linux-${oc_arch}-${OPENCODE_VERSION}.tgz" \
-        -o /tmp/opencode.tar.gz; \
-    mkdir -p /tmp/opencode-extract; \
-    tar -xzf /tmp/opencode.tar.gz -C /tmp/opencode-extract; \
-    bin="$(find /tmp/opencode-extract -type f -name opencode | head -1)"; \
-    test -n "${bin}"; \
-    install -m 0755 "${bin}" /usr/local/bin/opencode; \
-    opencode --version | grep -Fx "opencode v${OPENCODE_VERSION}"; \
-    rm -rf /tmp/opencode.tar.gz /tmp/opencode-extract
 
 COPY --from=agent-builder /out/clawmanager-agent /usr/local/bin/clawmanager-agent
+COPY --chmod=755 --from=native-team-builder /out/opencode /usr/local/bin/opencode
+COPY --from=native-team-builder /out/governance-manifest.json /usr/local/share/clawmanager/opencode-governance-manifest.json
+RUN opencode --version | grep -Fx "opencode v${OPENCODE_VERSION}"
+ENV CLAWMANAGER_MODEL_GOVERNANCE_PROTOCOL=1 CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION=opencode-team-v1
 COPY opencode/rootfs/usr/local/bin/start-opencode-web /usr/local/bin/start-opencode-web
 COPY opencode/scripts/opencode-lite-entrypoint /usr/local/bin/opencode-lite-entrypoint
 RUN sed -i 's/\r$//' /usr/local/bin/start-opencode-web /usr/local/bin/opencode-lite-entrypoint \

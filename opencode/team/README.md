@@ -55,3 +55,16 @@ repackages the authoritative protocol. Follow it with the governed
 `model-governance/Dockerfile.prebuilt` artifact/version/hash checks. A marker on
 a stock executable is insufficient. Preserve the full native UI archive when
 reusing build artifacts: upstream `--skip-web-ui` omits that UI.
+
+## Default release builds
+
+Both `opencode/Dockerfile` and `opencode/Dockerfile.lite` build the native CLI
+from the reviewed 2.0.27 commit with Bun 1.4.2 through
+`model-governance/build-native.sh`. The build applies governance and native Team
+tools, runs the native typecheck/tool tests (including Pro generation zero),
+and includes the full UI. The final stage installs that executable and its
+source manifest before advertising the Team marker. It no longer downloads
+an unused stock CLI. Target-platform builder execution also validates the
+matching architecture rather than attempting to execute an ARM artifact in
+an amd64 build stage. The 2026-11-03 live delivery was validated on amd64;
+this does not claim ARM live acceptance.

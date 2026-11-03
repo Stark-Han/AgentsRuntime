@@ -64,6 +64,8 @@ def check():
             while base in ancestors and base not in seen:
                 seen.add(base)
                 base = ancestors[base]
+            defaults = dict(re.findall(r"(?m)^ARG ([A-Z_]+)=(.+)$", content))
+            base = re.sub(r"\$\{([A-Z_]+)\}", lambda m: defaults.get(m[1], m[0]), base)
             require(bool(re.search(r"-slim[^\s]*@sha256:[0-9a-f]{64}$", base)),
                     f"{runtime}: final stage must descend from a digest-pinned slim image; got {base}")
         require(f"./cmd/{runtime}-lite-agent" in content,
@@ -102,8 +104,19 @@ def check():
                             "start-hermes-lite-runtime", "hermes_cli/tui_dist/entry.js"):
                 require(payload in content, f"hermes: missing runtime payload {payload}")
         elif runtime == "opencode":
-            require("ARG OPENCODE_VERSION=1.18.13" in content, "opencode: changed locked runtime version")
+            require("ARG OPENCODE_VERSION=2.0.27" in content, "opencode: changed locked runtime version")
             require("start-opencode-web" in content, "opencode: missing native Web/PTY server launcher")
+            # Both default publish entries must install the reviewed native tools;
+            # copying only the transport beside a stock CLI silently loses Team.
+            for flavor in ("Dockerfile", "Dockerfile.lite"):
+                published = (ROOT / "opencode" / flavor).read_text()
+                require("AS native-team-builder" in published and
+                        "RUN bash /governance/build-native.sh" in published and
+                        re.search(r"COPY .*--from=native-team-builder /out/opencode /usr/local/bin/opencode", published),
+                        f"opencode/{flavor}: default release omits the native Team build")
+                require("CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION=opencode-team-v1" in published and
+                        "opencode/team/" in published and "build-protocol.mjs" in published,
+                        f"opencode/{flavor}: native tools and Team bridge must ship together")
         else:
             for payload in ("ARG DSH_VERSION=0.1.2-alpha.3", "ARG PNPM_VERSION=11.25.0",
                             "managed.cordis.patch.yml", "prepare-deepseek-harness-resources",
