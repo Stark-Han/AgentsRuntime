@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/iamlovingit/clawmanager-agent/workspaceio"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -71,8 +72,9 @@ func LoadLLMSettingsFromEnv() (llmconfig.Settings, error) {
 
 func openCodeResolveOptions() llmconfig.ResolveOptions {
 	return llmconfig.ResolveOptions{
-		APIKeyEnvNames:    []string{"CLAWMANAGER_LLM_API_KEY", "OPENAI_API_KEY", "CLAWMANAGER_INSTANCE_TOKEN"},
-		LegacyModelPrefix: []string{defaultModelID},
+		PreferLegacyModels: managedV2Provider(),
+		APIKeyEnvNames:     []string{"CLAWMANAGER_LLM_API_KEY", "OPENAI_API_KEY", "CLAWMANAGER_INSTANCE_TOKEN"},
+		LegacyModelPrefix:  []string{defaultModelID},
 	}
 }
 
@@ -96,6 +98,29 @@ func RenderConfig(settings llmconfig.Settings) ([]byte, error) {
 		return nil, err
 	}
 
+	// v2 governance uses one managed provider. Preserve gateway model names
+	// rather than creating provider IDs that bypass its request adapter.
+	if managedV2Provider() && settings.ModelsQualified {
+		refs := settings.ModelRefs(clawmanagerProviderID)
+		settings.ModelIDs = nil
+		seen := map[string]bool{}
+		vision := map[string]bool{}
+		for key, value := range settings.Vision {
+			vision[key] = value
+		}
+		for _, ref := range refs {
+			if seen[ref.ModelID] {
+				return nil, fmt.Errorf("ambiguous managed OpenCode model name; supply gateway model names")
+			}
+			seen[ref.ModelID] = true
+			if value, exists := settings.Vision[ref.Qualified]; exists {
+				vision[ref.ModelID] = value
+			}
+			settings.ModelIDs = append(settings.ModelIDs, ref.ModelID)
+		}
+		settings.Vision = vision
+		settings.ModelsQualified = false
+	}
 	modelID := clawmanagerProviderID + "/" + settings.ModelIDs[0]
 	apiKeyEnv := strings.TrimSpace(settings.APIKeySource)
 	if apiKeyEnv == "" {
@@ -120,7 +145,7 @@ func RenderConfig(settings llmconfig.Settings) ([]byte, error) {
 		if managed {
 			provider := providers[ref.ProviderID].(map[string]any)
 			model := provider["models"].(map[string]any)[ref.ModelID].(map[string]any)
-			model["capabilities"] = map[string]any{"input": gateway.VisionInputModalities(nil, enabled), "output": []string{"text"}}
+			model[modelModalitiesKey()] = map[string]any{"input": gateway.VisionInputModalities(nil, enabled), "output": []string{"text"}}
 		}
 	}
 	doc := map[string]any{
@@ -189,9 +214,19 @@ func modelsMap(models []string, visionMaps ...map[string]bool) map[string]any {
 		out[id] = map[string]any{"name": name}
 		if len(visionMaps) > 0 {
 			if vision, managed := visionMaps[0][id]; managed {
-				out[id].(map[string]any)["capabilities"] = map[string]any{"input": gateway.VisionInputModalities(nil, vision), "output": []string{"text"}}
+				out[id].(map[string]any)[modelModalitiesKey()] = map[string]any{"input": gateway.VisionInputModalities(nil, vision), "output": []string{"text"}}
 			}
 		}
 	}
 	return out
+}
+
+func managedV2Provider() bool {
+	return os.Getenv("OPENCODE_RUNTIME_MAJOR") == "2" || os.Getenv("CLAWMANAGER_MODEL_GOVERNANCE_PROTOCOL") == "1"
+}
+func modelModalitiesKey() string {
+	if managedV2Provider() {
+		return "modalities"
+	}
+	return "capabilities"
 }

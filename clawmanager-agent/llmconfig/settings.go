@@ -23,8 +23,9 @@ var (
 )
 
 type ResolveOptions struct {
-	APIKeyEnvNames    []string
-	LegacyModelPrefix []string
+	PreferLegacyModels bool
+	APIKeyEnvNames     []string
+	LegacyModelPrefix  []string
 }
 
 type Settings struct {
@@ -137,7 +138,18 @@ func resolve(initial Settings, lookup envLookup, options ResolveOptions, emptyAP
 		resolved.APIKeySource = apiKeySource
 	}
 
-	if source, raw, ok := firstNonBlank(lookup, ProviderModelsEnv); ok {
+	providerLookup := lookup
+	if options.PreferLegacyModels {
+		if _, _, exists := firstNonBlank(lookup, legacyModelNames...); exists {
+			providerLookup = func(names ...string) (string, string, bool) {
+				if len(names) == 1 && names[0] == ProviderModelsEnv {
+					return "", "", false
+				}
+				return lookup(names...)
+			}
+		}
+	}
+	if source, raw, ok := firstNonBlank(providerLookup, ProviderModelsEnv); ok {
 		modelIDs, err := parseModelIDs(raw, source)
 		if err != nil {
 			return Settings{}, err
