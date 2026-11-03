@@ -1,0 +1,16 @@
+# Preserve the proven OpenClaw core/data adapters when only the Team transport
+# changes. BASE_IMAGE must be the reviewed immutable serving image.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG RUNTIME_REVISION
+COPY plugins/openclaw-redis-team/ /defaults/.openclaw/extensions/redis-team/
+RUN set -eu; \
+    core="$(dirname "$(readlink -f "$(command -v openclaw)")")"; \
+    test -f "$core/package.json"; \
+    mkdir -p /defaults/.openclaw/extensions/redis-team/node_modules; \
+    ln -sfn "$core" /defaults/.openclaw/extensions/redis-team/node_modules/openclaw; \
+    node --check /defaults/.openclaw/extensions/redis-team/dist/index.js; \
+    node --input-type=module -e 'const m=await import("/defaults/.openclaw/extensions/redis-team/dist/index.js");if(!m.default)process.exit(1)'; \
+    openclaw --version | grep '2026.10.2'
+ENV CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION=0.3.1
+LABEL io.clawmanager.team-source-revision="${RUNTIME_REVISION}"
