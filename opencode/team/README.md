@@ -19,6 +19,9 @@ session and input message. Redis deduplication, native input admission and the
 existing business receipts protect replay. The local tool bridge checks the
 authenticated native session, input and process generation; models do not need
 to provide these fields. Same-process retries retain the native tool call result.
+An initial managed Pro generation is zero; Lite Gateway generations start at
+one. Zero is accepted only for an explicitly enabled Pro host with an instance
+identity. The original generation is retained for governance and late-call fencing.
 After a restart, the shared protocol's durable business receipts remain the
 authority; an uncertain external operation is not declared successful.
 
@@ -46,3 +49,9 @@ acceptance. Delivery also requires the native source typecheck/tool tests,
 actual image checks and mixed/all-OpenCode Team acceptance against the target
 ClawManager backend. Existing busy OpenCode instances must not be moved between
 pools using the old destructive shared-pool replacement path.
+
+For a bridge-only rebuild on a verified native base, `opencode/Dockerfile.team-overlay`
+repackages the authoritative protocol. Follow it with the governed
+`model-governance/Dockerfile.prebuilt` artifact/version/hash checks. A marker on
+a stock executable is insufficient. Preserve the full native UI archive when
+reusing build artifacts: upstream `--skip-web-ui` omits that UI.
