@@ -3063,7 +3063,7 @@ function normalizedSessionContentType(value) {
   return trim(value).toLowerCase().replace(/[-_]/g, "");
 }
 
-async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log }) {
+async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log, observe }) {
   if (!cfg?.redisUrl || !envelope || isContextOnlyEnvelope(envelope)) {
     return { stop: async () => {} };
   }
@@ -3094,7 +3094,8 @@ async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log }
 	  // OpenClaw 8.1 stores active sessions in SQLite. Activity evidence is
 	  // supplied by the official message/tool hooks; this heartbeat never reads
 	  // transcript files or private database tables.
-	  const observed = null;
+	  const observed = typeof observe === "function" ? await observe() : null;
+      if (observed && Number.isFinite(observed.mtimeMs) && observed.mtimeMs >= startedAt && observed.mtimeMs <= Date.now()) lastSession = observed;
       const sessionAgeMs = lastSession ? Math.max(0, Date.now() - lastSession.mtimeMs) : Date.now() - startedAt;
       const quietForSeconds = Math.floor(sessionAgeMs / 1000);
       const stallCandidate = sessionAgeMs >= policy.softTimeoutSec * 3 * 1000;
@@ -6594,6 +6595,7 @@ async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
           }
         }
         for (const msg of messages) {
+          if (!running) break;
           if ((await teamMaintenanceState(redis, cfg)).enabled) {
             // Maintenance can start while the previous message in this batch
             // is executing. Keep the remainder pending, including after the
@@ -6633,6 +6635,10 @@ async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
             await redis.command("SET", processedKey, envelope.messageId, "EX", 604800);
             await redis.command("XACK", inboxKey(cfg), cfg.consumerGroup, msg.redisId);
           } catch (err) {
+            // A supervised shutdown is not a failed business delivery. Keep
+            // pending entries for the next consumer instead of moving them to
+            // DLQ merely because its transport was intentionally closed.
+            if (!running) return;
             const error = err instanceof Error ? err.message : String(err);
             log.error("redis-team: message processing failed: " + error);
             const envelope = normalizeEnvelope(msg) || {};
@@ -6660,18 +6666,20 @@ async function startConsumer(cfg, onMessage, onProcessingFailure, log) {
   const loopPromise = loop();
 
   return {
-    async stop() {
-      running = false;
-      if (timer) clearInterval(timer);
-      redis.close();
-      try {
-        const status = await writeLocalStatus(cfg, {
-          liveness: "offline",
-        });
-        await presenceRedis.command("HSET", presenceKey(cfg), cfg.memberId, JSON.stringify(status));
-      } catch {}
-      presenceRedis.close();
-      await loopPromise.catch(() => {});
+    async stop({ waitForExecution = true } = {}) {
+      if (running) {
+        running = false;
+        if (timer) clearInterval(timer);
+        redis.close();
+        try {
+          const status = await writeLocalStatus(cfg, { liveness: "offline" });
+          await presenceRedis.command("HSET", presenceKey(cfg), cfg.memberId, JSON.stringify(status));
+        } catch {}
+        presenceRedis.close();
+      }
+      // A host that must interrupt a native execution first can stop inbox
+      // admission without waiting on the very execution it needs to interrupt.
+      if (waitForExecution) await loopPromise.catch(() => {});
       log.info("redis-team: consumer stopped");
     },
   };

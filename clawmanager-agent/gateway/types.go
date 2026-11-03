@@ -70,6 +70,8 @@ type Config struct {
 	LLMAPIKeySet          bool
 	LLMAPIKeyEnvName      string
 	LLMModelIDs           []string
+	LLMContextWindow      int
+	LLMContextWindows     map[string]int
 	LLMVision             map[string]bool
 	LLMModelsQualified    bool
 	LLMReasoning          map[string]bool

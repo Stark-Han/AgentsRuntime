@@ -105,6 +105,10 @@ func RenderConfig(settings llmconfig.Settings) ([]byte, error) {
 		settings.ModelIDs = nil
 		seen := map[string]bool{}
 		vision := map[string]bool{}
+		windows := map[string]int{}
+		for key, value := range settings.ContextWindows {
+			windows[key] = value
+		}
 		for key, value := range settings.Vision {
 			vision[key] = value
 		}
@@ -116,9 +120,13 @@ func RenderConfig(settings llmconfig.Settings) ([]byte, error) {
 			if value, exists := settings.Vision[ref.Qualified]; exists {
 				vision[ref.ModelID] = value
 			}
+			if value, exists := settings.ContextWindows[ref.Qualified]; exists {
+				windows[ref.ModelID] = value
+			}
 			settings.ModelIDs = append(settings.ModelIDs, ref.ModelID)
 		}
 		settings.Vision = vision
+		settings.ContextWindows = windows
 		settings.ModelsQualified = false
 	}
 	modelID := clawmanagerProviderID + "/" + settings.ModelIDs[0]
@@ -138,6 +146,19 @@ func RenderConfig(settings llmconfig.Settings) ([]byte, error) {
 		providers, enabledProviders = qualifiedProviderConfig(settings.BaseURL, apiKeyEnv, llmconfig.GroupModelRefs(refs))
 	}
 	for _, ref := range refs {
+		if managedV2Provider() {
+			window, exists := settings.ContextWindows[ref.Qualified]
+			if !exists {
+				window, exists = settings.ContextWindows[ref.ModelID]
+			}
+			if !exists {
+				window = settings.ContextWindow
+			}
+			if window > 0 {
+				model := providers[ref.ProviderID].(map[string]any)["models"].(map[string]any)[ref.ModelID].(map[string]any)
+				model["limit"] = map[string]int{"context": window, "output": min(32000, window)}
+			}
+		}
 		enabled, managed := settings.Vision[ref.Qualified]
 		if !managed {
 			enabled, managed = settings.Vision[ref.ModelID]

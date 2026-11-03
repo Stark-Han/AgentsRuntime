@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/iamlovingit/clawmanager-agent/gateway"
@@ -67,5 +68,49 @@ func TestLegacyConfigRetainsQualifiedProvider(t *testing.T) {
 	}
 	if doc["model"] != "openai/model" {
 		t.Fatalf("legacy model changed: %v", doc["model"])
+	}
+}
+
+func TestV2ContextLimitsUseGatewayNamesAndCapOutput(t *testing.T) {
+	t.Setenv("OPENCODE_RUNTIME_MAJOR", "2")
+	settings, err := resolveLLMSettings(gateway.Config{}, gateway.CreateGatewayRequest{Environment: map[string]string{
+		"CLAWMANAGER_LLM_BASE_URL": "https://gateway.example/v1", "CLAWMANAGER_LLM_API_KEY": "test",
+		"CLAWMANAGER_LLM_MODEL": `["small","large"]`, "CLAWMANAGER_LLM_CONTEXT_WINDOW": "8192",
+		"CLAWMANAGER_LLM_CONTEXT_WINDOWS": `{"small":2048,"large":128000}`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := RenderConfig(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	models := doc["provider"].(map[string]any)["clawmanager"].(map[string]any)["models"].(map[string]any)
+	for id, expected := range map[string][2]float64{"auto": {8192, 8192}, "small": {2048, 2048}, "large": {128000, 32000}} {
+		limit := models[id].(map[string]any)["limit"].(map[string]any)
+		if limit["context"] != expected[0] || limit["output"] != expected[1] {
+			t.Fatalf("%s limit=%v", id, limit)
+		}
+	}
+	_, err = resolveLLMSettings(gateway.Config{}, gateway.CreateGatewayRequest{Environment: map[string]string{"CLAWMANAGER_LLM_CONTEXT_WINDOWS": `{"bad":-1}`}})
+	if err == nil {
+		t.Fatal("negative context window accepted")
+	}
+}
+
+func TestV2AuthenticationMatchesNativeFixedUsernameAndPasswordPrecedence(t *testing.T) {
+	t.Setenv("OPENCODE_RUNTIME_MAJOR", "2")
+	env := NewProfile("opencode").GatewayEnv([]string{"OPENCODE_PASSWORD=stale"}, gateway.Config{GatewayToken: "managed"}, gateway.CreateGatewayRequest{Environment: map[string]string{"OPENCODE_SERVER_USERNAME": "unsupported"}}, t.TempDir(), 20000)
+	values := map[string]string{}
+	for _, item := range env {
+		key, value, _ := strings.Cut(item, "=")
+		values[key] = value
+	}
+	if values["OPENCODE_SERVER_USERNAME"] != "opencode" || values["OPENCODE_PASSWORD"] != "managed" || values["OPENCODE_SERVER_PASSWORD"] != "managed" {
+		t.Fatal("native v2 authentication diverged")
 	}
 }

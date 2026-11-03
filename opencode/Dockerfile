@@ -1,5 +1,9 @@
+ARG NODE_BASE_IMAGE=node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+ARG GO_BUILDER_IMAGE=golang:1.26.8-bookworm
+ARG WEBTOP_BASE_IMAGE=lscr.io/linuxserver/webtop:ubuntu-kde
+FROM ${NODE_BASE_IMAGE} AS team-node
 
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS clawmanager-agent-builder
+FROM --platform=$BUILDPLATFORM ${GO_BUILDER_IMAGE} AS clawmanager-agent-builder
 
 WORKDIR /src/legacy-agent
 
@@ -26,7 +30,7 @@ RUN set -eux; \
         go build -trimpath -ldflags="-s -w -X main.version=${AGENT_VERSION}" \
         -o /out/clawmanager-agent ./cmd
 
-FROM lscr.io/linuxserver/webtop:ubuntu-kde
+FROM ${WEBTOP_BASE_IMAGE}
 
 ARG OPENCODE_VERSION=2.0.27
 ARG TARGETARCH
@@ -106,3 +110,9 @@ RUN set -eux; \
     chown -R abc:abc /config/.opencode || true
 
 EXPOSE 3001
+
+COPY --from=team-node /usr/local/bin/node /usr/local/bin/node
+COPY opencode/team/ /usr/local/share/clawmanager/opencode-team/
+COPY plugins/openclaw-redis-team/dist/index.js /tmp/clawmanager-team-protocol-source.js
+RUN node /usr/local/share/clawmanager/opencode-team/build-protocol.mjs /usr/local/share/clawmanager/opencode-team/protocol.mjs /tmp/clawmanager-team-protocol-source.js \
+ && rm /tmp/clawmanager-team-protocol-source.js
