@@ -67,6 +67,50 @@ export class NativeClient {
     }
   }
 
+  // Upstream 2.0.27 Bus.configured() defaults persist=false. Its historical
+  // SSE endpoint can return only log.synced, so use the materialized native
+  // messages for this exact admitted input without enabling unbounded logging.
+  async inspectTurn(identity, signal) {
+    const ids=nativeIdentity(identity);
+    let input;
+    try { input=(await this.api(`/api/session/${ids.session}/message/${ids.message}`,{signal})).data; }
+    catch(error){if(error instanceof NativeRequestError && error.status===404)return {consumed:false};throw error;}
+    if(input?.id!==ids.message || input.type!=="user")throw Error("Native input ownership mismatch");
+    let cursor=Buffer.from(JSON.stringify({id:ids.message,order:"asc",direction:"next"})).toString("base64url");
+    const facts={consumed:true,failed:false,observed:{}};
+    const seen=new Set();
+    for(let page=0;page<10;page++){
+      const result=await this.api(`/api/session/${ids.session}/message?limit=100&cursor=${encodeURIComponent(cursor)}`,{signal});
+      if(!Array.isArray(result.data))throw Error("Invalid native message projection");
+      for(const message of result.data){
+        if(seen.has(message.id))throw Error("Repeated native message cursor");
+        seen.add(message.id);
+        if(message.type==="user")return facts; // never cross another admitted input
+        const at=Number(message.time?.completed || message.time?.streamed || message.time?.created || 0);
+        if(at)Object.assign(facts.observed,{mtimeMs:at,lastSessionEventAt:new Date(at).toISOString(),sessionCursor:message.id});
+        if(message.type==="idle") { facts.failed=message.outcome!=="succeeded";facts.outcome=message.outcome;return facts; }
+        if(message.type!=="assistant")continue;
+        facts.observed.sessionCursor=message.id+":"+(message.content||[]).map(p=>p.type+":"+String(p.text||"").length+":"+String(p.state?.status||"")).join("|");
+        facts.observed.lastActivityKind="model_output";
+        if(message.error)facts.failed=true;
+        for(const part of message.content||[]){
+          if(part.type==="tool")Object.assign(facts.observed,{lastActivityKind:part.state?.status==="running"?"tool_call":"tool_result",lastToolName:part.name,pendingToolName:part.state?.status==="running"?part.name:"",lastToolFailed:part.state?.status==="error"});
+        }
+        // Final public text only; intermediate prose, reasoning and raw tool
+        // arguments/results never become a Team delivery or observation body.
+        if(message.finish==="stop" && message.time?.completed){
+          const text=(message.content||[]).filter(p=>p.type==="text").map(p=>String(p.text||"")).join("\n");
+          if(text.trim())facts.publicText={text,recordId:message.id,at:new Date(at).toISOString()};
+        }
+      }
+      if(result.data.length<100)return facts;
+      const next=result.cursor?.next;
+      if(!next || next===cursor)throw Error("Native message continuation unavailable");
+      cursor=next;
+    }
+    throw Error("Native input observation window exceeded");
+  }
+
   async readLog(identity, after, observe, signal) {
     const ids = nativeIdentity(identity);
     const response = await this.request(`${this.origin}/api/experimental/session/${ids.session}/log?after=${after}&follow=false`, {

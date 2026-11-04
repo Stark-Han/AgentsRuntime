@@ -93,3 +93,13 @@ For the backend-only and plugin-only image overlays use immutable serving bases;
 record base/final digests and binary hashes with the release. The OpenClaw
 maintenance overlay updates both installed/default plugin copies on Team10.2,
 without changing its core, Agent, workspace adapters or instance identities.
+
+Native 2.0.27's production bus does **not** retain historical events by default.
+The supervisor therefore uses the materialized message API with an official
+cursor anchored to the exact admitted input, bounded pages and a next-user/idle
+boundary. Final public `finish=stop` text and native idle failure are distinct
+facts. It never enables global event persistence or exposes reasoning. Changing
+materialized record metadata/length supplies progress without publishing content.
+Transient observation errors retain the current execution/envelope while probing;
+they do not interrupt a healthy model or start a competing turn. The existing
+execution deadline and confirmed-stop requirement remain.

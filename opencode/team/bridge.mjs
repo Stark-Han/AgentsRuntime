@@ -123,7 +123,18 @@ export async function createBridge({ protocol, native, environment = process.env
     const deadline = Date.now() + cfg.embeddedTimeoutSeconds * 1000;
     let idle = 0, cursor = 0, ownsInput = false;
     while (!current.interrupted) {
-     cursor = await native.readLog(identity, cursor, event => {
+     if (Date.now() >= deadline) { await stopExecution(); throw new Error("OpenCode Team execution timed out after confirmed interrupt"); }
+     try {
+     let nativeFacts;
+     if (native.inspectTurn) {
+      nativeFacts = await native.inspectTurn(identity,abort.signal);
+      current.nativeFailure=nativeFacts.failed===true;
+      if(nativeFacts.observed){
+       const changed=nativeFacts.observed.sessionCursor && nativeFacts.observed.sessionCursor!==current.observed?.sessionCursor;
+       current.observed={...nativeFacts.observed,mtimeMs:changed?Date.now():(current.observed?.mtimeMs||nativeFacts.observed.mtimeMs)};
+      }
+      if(nativeFacts.publicText && runtime.isActiveTaskCompleted(identity.taskId))current.deliveryText=nativeFacts.publicText;
+     } else cursor = await native.readLog(identity, cursor, event => {
       if (event.type === "session.inbox.delivered") ownsInput = event.data.inboxID === ids.message;
       if (!ownsInput) return;
       // Reasoning content and tool arguments/results never leave the native
@@ -146,12 +157,23 @@ export async function createBridge({ protocol, native, environment = process.env
      const inbox = await native.api(`/api/session/${ids.session}/inbox`, { signal: abort.signal });
      // Never mistake scheduling latency or an input parked in native inbox for
      // a finished turn. Native message persistence confirms input consumption.
-     let consumed = false;
-     try { await native.api(`/api/session/${ids.session}/message/${ids.message}`, { signal: abort.signal }); consumed = true; }
+     let consumed = nativeFacts?.consumed===true;
+     if(!native.inspectTurn) try { await native.api(`/api/session/${ids.session}/message/${ids.message}`, { signal: abort.signal }); consumed = true; }
      catch (error) { if (!(error instanceof NativeRequestError) || error.status !== 404) throw error; }
      if (consumed && !state.data?.[ids.session] && Array.isArray(inbox.data) && !inbox.data.some(item => item.id === ids.message)) idle++; else idle = 0;
+     if(current.observationError){
+      current.observationError=false;
+      await emitTaskEvent("task_progress",{eventKind:"runtime_execution_started",executionObservationRecovered:true,nonAuthoritative:true,stateEffect:"none",rootTaskTerminal:false,visibleToChat:false,nativeInputId:ids.message,generation});
+     }
      if (idle >= 2) break;
-     if (Date.now() >= deadline) { await stopExecution(); throw new Error("OpenCode Team execution timed out after confirmed interrupt"); }
+     } catch(error) {
+      if(abort.signal.aborted)throw error;
+      idle=0;
+      if(!current.observationError){
+       current.observationError=true;
+       await emitTaskEvent("task_progress",{eventKind:"runtime_reconciliation_needed",failureDomain:"native_observation",retryable:true,executionStopped:false,nativeInputId:ids.message,generation,nonAuthoritative:true,stateEffect:"none",rootTaskTerminal:false,visibleToChat:false,summary:"Native execution observation unavailable; retaining the current execution without replay"}).catch(()=>log.warn?.("Native observation notice remains unconfirmed"));
+      }
+     }
      await sleep(1000, undefined, { signal: abort.signal });
     }
     if (current.nativeFailure) throw new Error("OpenCode native execution failed after confirmed idle");

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {createBridge} from './bridge.mjs';
 import {nativeIdentity} from './native-client.mjs';
 
-for (const [accepted, failed, foreign] of [[true,false,false],[false,false,false],[true,true,false],[true,false,true]]) {
- test(`native delivery requires receipt, owned input and successful execution: ${accepted}/${failed}/${foreign}`, async()=>{
+for (const [accepted, failed, foreign, transient] of [[true,false,false,false],[false,false,false,false],[true,true,false,false],[true,false,true,false],[true,false,false,true]]) {
+ test(`native delivery requires receipt, owned input and successful execution: ${accepted}/${failed}/${foreign}/${transient}`, async()=>{
   let receive; const events=[];
   const envelope={taskId:'team-12-task-3',rootTaskId:'team-12-task-3',messageId:'original-input',text:'work'};
   const ids=nativeIdentity({teamId:'12',memberId:'worker',taskId:envelope.taskId,messageId:envelope.messageId,generation:2});
@@ -19,6 +19,7 @@ for (const [accepted, failed, foreign] of [[true,false,false],[false,false,false
     observe({type:'session.reasoning.ended',created:Date.now(),durable:{seq:2},data:{text:'private-reasoning-canary'}});
     observe({type:'session.text.ended',created:Date.now(),durable:{seq:3},data:{text:'Full final public answer',assistantMessageID:'msg_actual_answer'}});
     observe({type:failed?'session.execution.failed':'session.execution.succeeded',created:Date.now(),durable:{seq:4},data:{}});return 4;}};
+  if(transient){let reads=0;native.inspectTurn=async()=>{if(!reads++)throw Error("temporary read failure");return {consumed:true,failed:false,observed:{mtimeMs:Date.now(),sessionCursor:"actual-final-record"},publicText:{recordId:"actual-final-record",text:"Full final public answer",at:new Date().toISOString()}};};}
   const bridge=await createBridge({protocol,native,environment:{CLAWMANAGER_GATEWAY_GENERATION:'2'}});
   try {await bridge.start();if(failed&&!foreign)await assert.rejects(receive(envelope),/execution failed/);else await receive(envelope);
    const delivery=events.filter(e=>e.eventKind==='delivery_supplement');
