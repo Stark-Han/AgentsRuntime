@@ -1,3 +1,5 @@
+import path from "node:path";
+import { deliveryOutbox } from "./delivery-outbox.mjs";
 import { createServer } from "node:http";
 import { timingSafeEqual, randomBytes, createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -26,7 +28,12 @@ export async function createBridge({ protocol, native, environment = process.env
  const managedPro = environment.CLAWMANAGER_AGENT_ENABLED === "true" && /^[1-9][0-9]*$/.test(environment.INSTANCE_ID || "");
  if (!cfg.enabled || !cfg.teamId || !cfg.memberId || !Number.isSafeInteger(generation) || generation < 0 || generation === 0 && !managedPro) throw new Error("OpenCode Team identity unavailable");
  const token = randomBytes(32).toString("hex");
- let active = null, stopped = false, nativeGone = false, consumer;
+ let active = null, stopped = false, nativeGone = false, consumer, controlTimer, controlBusy = false;
+ const publishDelivery = async(envelope,payload) => {
+  const redis=new protocol.RedisClient(cfg.redisUrl);
+  try {await redis.connect();await protocol.xaddJson(redis,protocol.eventsKey(cfg),protocol.taskEvent(cfg,"reply",envelope,payload));}finally{redis.close();}
+ };
+ const deliveries=protocol.runtimeStateDir ? deliveryOutbox(path.join(protocol.runtimeStateDir(cfg),"native-public-delivery"),publishDelivery) : null;
  const abort = new AbortController();
  let stopInFlight, closeInFlight;
  async function stopExecution() {
@@ -53,6 +60,7 @@ export async function createBridge({ protocol, native, environment = process.env
     if (!args) return reply(422, { error_code: "TEAM_INVALID_COMPLETION", error: "Use status=succeeded, failed or cancelled and a non-empty summary. Assignment identity is inherited; a file is not required for a text answer." });
     input.arguments = args;
    }
+   if (input.name === "team_send" && !input.arguments.text && !input.arguments.message && typeof input.arguments.content === "string") input.arguments = { ...input.arguments, text: input.arguments.content };
    const method = methods[input.name];
    const digest = createHash("sha256").update(JSON.stringify([input.name, input.arguments])).digest("hex");
    let call = current.calls.get(input.callID);
@@ -71,7 +79,11 @@ export async function createBridge({ protocol, native, environment = process.env
    reply(200, method === "status" && runtime.statusContext
     ? { ok: true, result: value.status, workflow: value.workflow }
     : { ok: true, result: value });
-  } catch {
+  } catch (error) {
+   // These validations occur before a write. Never classify a storage or
+   // publication failure as an unexecuted call.
+   if (/^(Canonical Team artifact path is outside|Team artifact path escaped|Team artifact scope must|Team-scoped artifact|Only the Team Leader|Invalid Team artifact|Team artifact .*required)/.test(String(error?.message || "")))
+    return reply(422, { error_code: "TEAM_INVALID_ARGUMENT" });
    // Runtime/model secrets and source URLs are never returned in tool errors.
    reply(500, { error: "Team tool failed; inspect the current work before retrying" });
   }
@@ -102,10 +114,12 @@ export async function createBridge({ protocol, native, environment = process.env
      await protocol.writeLocalStatus(cfg, { availability: "busy", runtimeStatus: "running", currentTaskId: identity.taskId, currentAssignmentId: envelope.assignmentId || envelope.workId, currentWorkId: envelope.workId || envelope.assignmentId, currentSourceMessageId: envelope.messageId, currentRevision: Math.max(1, Number(envelope.revision) || 1), lastSummary: "OpenCode Team task started" });
      await emitTaskEvent("task_started", { availability: "busy", runtimeStatus: "running", summary: "OpenCode Team task started" });
      stopHeartbeat = protocol.startAssignmentHeartbeat({ envelope, emitTaskEvent, log, isTerminal: () => runtime.isActiveTaskCompleted(envelope.taskId) });
-     activity = await protocol.startAssignmentActivityObserver({ cfg, envelope, startedAt, log, observe: () => current.observed });
+
     }
+    activity = await protocol.startAssignmentActivityObserver({ cfg, envelope, startedAt, log, observe: () => current.observed, observeContext: true });
     const text = protocol.appendRedisTeamCompletionGuidance(await protocol.appendLeaderTeamContext(String(envelope.text || ""), cfg, envelope), envelope);
     await native.admit(identity, environment.CLAWMANAGER_DEFAULT_PROJECT_PATH || environment.CLAWMANAGER_PROJECT_PATH, [environment.CLAWMANAGER_TEAM_SYSTEM_PROMPT || "", text].filter(Boolean).join("\n\n"), abort.signal);
+    await emitTaskEvent("task_progress", { eventKind: "runtime_execution_started", nonAuthoritative: true, stateEffect: "none", rootTaskTerminal: false, visibleToChat: false, nativeInputId: ids.message, activityAssignmentId: envelope.assignmentId || envelope.workId || "root-owner-observation", generation });
     const deadline = Date.now() + cfg.embeddedTimeoutSeconds * 1000;
     let idle = 0, cursor = 0, ownsInput = false;
     while (!current.interrupted) {
@@ -117,7 +131,12 @@ export async function createBridge({ protocol, native, environment = process.env
       const mtimeMs = Number(event.created);
       const previous = current.observed || {};
       const observed = { ...previous, mtimeMs, lastSessionEventAt: new Date(mtimeMs).toISOString(), sessionCursor: String(event.durable.seq) };
-      if (event.type === "session.text.ended") Object.assign(observed, { lastActivityKind: "assistant", lastAssistantText: String(event.data.text || "").slice(0, 4000), lastAssistantAt: observed.lastSessionEventAt });
+      if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") current.nativeFailure = true;
+      else if (event.type === "session.execution.succeeded") current.nativeFailure = false;
+      if (event.type === "session.text.ended") {
+       if (runtime.isActiveTaskCompleted(identity.taskId)) if (runtime.isActiveTaskCompleted(identity.taskId)) current.deliveryText = { text: String(event.data.text || ""), recordId: String(event.data.assistantMessageID || ""), at: observed.lastSessionEventAt };
+       Object.assign(observed, { lastActivityKind: "assistant", lastAssistantText: String(event.data.text || "").slice(0, 4000), lastAssistantAt: observed.lastSessionEventAt });
+      }
       else if (event.type === "session.tool.input.started") Object.assign(observed, { lastActivityKind: "tool_call", pendingToolName: String(event.data.name || "").slice(0, 120) });
       else if (["session.tool.success", "session.tool.failed"].includes(event.type)) Object.assign(observed, { lastActivityKind: "tool_result", lastToolName: previous.pendingToolName || "", pendingToolName: "", lastToolFailed: event.type.endsWith("failed"), lastToolAt: observed.lastSessionEventAt });
       else if (event.type === "session.reasoning.ended") observed.lastActivityKind = "model_output";
@@ -134,6 +153,21 @@ export async function createBridge({ protocol, native, environment = process.env
      if (idle >= 2) break;
      if (Date.now() >= deadline) { await stopExecution(); throw new Error("OpenCode Team execution timed out after confirmed interrupt"); }
      await sleep(1000, undefined, { signal: abort.signal });
+    }
+    if (current.nativeFailure) throw new Error("OpenCode native execution failed after confirmed idle");
+    // Publish only a final public answer attached to this turn's accepted
+    // explicit receipt. Intermediate native prose/reasoning stays private.
+    if (runtime.isActiveTaskCompleted(identity.taskId) && current.deliveryText?.recordId && current.deliveryText.text.trim()) {
+     const body = current.deliveryText;
+     const deliveryStatus = await runtime.status(cfg.memberId);
+     const deliveryPayload = { eventKind: "delivery_supplement", nativePublicDelivery: true,
+      eventId: "native-delivery-" + createHash("sha256").update(JSON.stringify([identity, body.recordId, body.text])).digest("hex"),
+      sourceRecordId: body.recordId, sourceMessageId: deliveryStatus?.currentSourceMessageId || envelope.messageId, nativeInputId: ids.message, generation,
+      sourceOccurredAt: body.at, lateProjection: true, nonAuthoritative: true, stateEffect: "none",
+      rootTaskTerminal: false, text: body.text.slice(0, 64000), textTruncated: body.text.length > 64000,
+      summary: "Final public answer from the acknowledged member turn", visibleToChat: true, chatKind: "delivery_supplement" };
+     if(deliveries){await deliveries.save(envelope,deliveryPayload); await deliveries.flush().catch(()=>log.warn?.("OpenCode public delivery retained for publication retry"));}
+     else await publishDelivery(envelope,deliveryPayload);
     }
     // Native idle is an execution fact, never a business completion receipt.
    }, cfg);
@@ -156,12 +190,14 @@ export async function createBridge({ protocol, native, environment = process.env
    }
   } finally {
    stopHeartbeat();
-   await activity?.stop(current.interrupted ? "cancelled" : "turn_finished").catch(() => log.warn?.("OpenCode Team activity close remains unconfirmed"));
+   await activity?.stop(current.interrupted ? "cancelled" : current.nativeFailure ? "failed" : "turn_finished").catch(() => log.warn?.("OpenCode Team activity close remains unconfirmed"));
    // If the transport fails, keep identity bound until native execution is
    // proven idle. Do not allow a later delivery to steal its tools.
    if (!current.interrupted) {
-    const state = await native.api("/api/session/active");
-    if (state.data?.[ids.session]) await stopExecution();
+    try {
+     const state = await native.api("/api/session/active");
+     if (state.data?.[ids.session]) await stopExecution();
+    } catch (error) {current.recoveryEnvelope=envelope;throw error;}
    }
    if (active === current) active = null;
   }
@@ -169,16 +205,36 @@ export async function createBridge({ protocol, native, environment = process.env
  return {
   port: server.address().port, token,
   async start() {
-   consumer = await protocol.startConsumer(cfg, consume, async envelope => {
+   const reportFailure = async (envelope,error,stoppedEvidence=false) => {
     log.error("OpenCode Team delivery failed; original work remains available for recovery");
     if (await runtime.isTaskTerminal(cfg, envelope)) return;
     await protocol.writeLocalStatus(cfg, { availability: "busy", runtimeStatus: "recovering", currentTaskId: envelope.taskId, currentAssignmentId: envelope.assignmentId || envelope.workId, lastSummary: "OpenCode Team runtime reconciliation is required" });
     const redis = new protocol.RedisClient(cfg.redisUrl);
     try {
      await redis.connect();
-     await protocol.xaddJson(redis, protocol.eventsKey(cfg), protocol.taskEvent(cfg, "task_progress", envelope, { status: "running", availability: "busy", runtimeStatus: "recovering", eventKind: "runtime_reconciliation_needed", failureDomain: "runtime_adapter", retryable: true, stateEffect: "none", nonAuthoritative: true, rootTaskTerminal: false, visibleToChat: false, chatPolicy: "hidden", summary: "OpenCode Team runtime reconciliation is required" }));
+     await protocol.xaddJson(redis, protocol.eventsKey(cfg), protocol.taskEvent(cfg, "task_progress", envelope, { status: "running", availability: "busy", runtimeStatus: "recovering", recoveryFaultKey: envelope.metadata?.recoveryFaultKey, boundedRecoveryAttempt: envelope.metadata?.boundedRecoveryAttempt, executionStopped: stoppedEvidence || !active, generation, failureCode: /native request failed/.test(String(error)) ? "native_transport_failure" : "native_execution_failure", eventKind: "runtime_reconciliation_needed", failureDomain: "runtime_adapter", retryable: true, stateEffect: "none", nonAuthoritative: true, rootTaskTerminal: false, visibleToChat: false, chatPolicy: "hidden", summary: "OpenCode Team runtime reconciliation is required" }));
     } finally { redis.close(); }
-   }, log);
+   };
+   await deliveries?.flush().catch(()=>log.warn?.("OpenCode public delivery remains pending"));
+   consumer = await protocol.startConsumer(cfg, consume, reportFailure, log);
+   // This control probe never runs a model. A failed HTTP read cannot leave
+   // the member's identity pinned forever after its process actually exited.
+   controlTimer=setInterval(async()=>{
+    const held=active;
+    if(stopped || controlBusy)return;
+    controlBusy=true;
+    try {
+     await deliveries?.flush();
+     if(!held?.recoveryEnvelope)return;
+     const state=await native.api("/api/session/active");
+     const inbox=await native.api(`/api/session/${held.ids.session}/inbox`);
+     if(!state.data?.[held.ids.session] && Array.isArray(inbox.data) && inbox.data.length===0 && active===held){
+      await reportFailure(held.recoveryEnvelope,"native transport recovered; original execution confirmed idle",true);
+      if(active===held) active=null;
+     }
+    } catch {} finally {controlBusy=false}
+   },5000);
+   controlTimer.unref?.();
    if (!consumer) throw new Error("OpenCode Team consumer did not start");
   },
   async stop({ nativeExited = false } = {}) {
@@ -186,6 +242,7 @@ export async function createBridge({ protocol, native, environment = process.env
    if (nativeExited && active) active.interrupted = true;
    if (closeInFlight) return closeInFlight;
    stopped = true;
+   clearInterval(controlTimer);
    closeInFlight = (async () => {
     // Stop admission first. The accepted native execution is then interrupted
     // and joined; untouched inbox entries remain pending for the next process.

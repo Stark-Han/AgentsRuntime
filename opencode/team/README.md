@@ -68,3 +68,28 @@ an unused stock CLI. Target-platform builder execution also validates the
 matching architecture rather than attempting to execute an ARM artifact in
 an amd64 build stage. The 2026-11-03 live delivery was validated on amd64;
 this does not claim ARM live acceptance.
+
+## Execution recovery maintenance (2026-11-04)
+
+The full optional completion schema remains model-visible; only `status` and
+`summary` are required. Known explicit completion aliases normalize before any
+side effects. Validation failures are distinct from uncertain transport effects.
+Native failures are not classified as missing business receipts.
+
+A final public assistant text can supplement an already accepted result only
+for the owned native input. It never creates a receipt or closes/reopens a root.
+Intermediate text, reasoning and raw tool data stay private. Supplements use a
+private publication journal under the existing member state directory: retry or
+restart republishes the same event identity, never another model execution.
+
+The independent control probe checks a retained execution identity after an
+uncertain stop/read; it releases that identity only after native active/inbox
+checks prove idle. A model is never started by this probe. The backend observes
+all active roots, including Leaders without Worker cards, and applies bounded
+same-root recovery only when execution exit is explicit. Unknown live executions
+remain held and produce a visible blocker rather than a competing model turn.
+
+For the backend-only and plugin-only image overlays use immutable serving bases;
+record base/final digests and binary hashes with the release. The OpenClaw
+maintenance overlay updates both installed/default plugin copies on Team10.2,
+without changing its core, Agent, workspace adapters or instance identities.

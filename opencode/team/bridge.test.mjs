@@ -5,7 +5,7 @@ import { nativeIdentity } from "./native-client.mjs";
 
 test("initial Pro generation zero is preserved and is rejected for a Lite or unidentified host", async () => {
  const cfg = { enabled: true, teamId: "12", memberId: "writer" };
- const protocol = { readChannelConfig: () => cfg, createRuntime: () => ({}) };
+ const protocol = { startAssignmentActivityObserver: async () => ({stop:async()=>{}}), RedisClient: class { async connect(){} close(){} }, taskEvent: (_, event, envelope, extra) => ({ event, ...extra }), eventsKey: () => "events", xaddJson: async () => {}, readChannelConfig: () => cfg, createRuntime: () => ({}) };
  const environment = { CLAWMANAGER_GATEWAY_GENERATION: "0" };
  await assert.rejects(createBridge({ protocol, native: {}, environment }), /identity unavailable/);
  await assert.rejects(createBridge({ protocol, native: {}, environment: { ...environment, CLAWMANAGER_AGENT_ENABLED: "true" } }), /identity unavailable/);
@@ -16,8 +16,9 @@ test("initial Pro generation zero is preserved and is rejected for a Lite or uni
 test("tools are bound to active native input and never to model supplied Team IDs", async () => {
  let receive, release; const sent = [];
  const cfg = { enabled: true, teamId: "12", memberId: "writer", embeddedTimeoutSeconds: 10 };
- const runtime = { isTaskTerminal: async () => true, withActiveEnvelope: async (_, fn) => fn(), send: async args => { sent.push(args); return { sent: true }; } };
- const protocol = {
+ const runtime = { isActiveTaskCompleted: () => false, isTaskTerminal: async () => true, withActiveEnvelope: async (_, fn) => fn(), send: async args => { sent.push(args); return { sent: true }; } };
+ const protocol = { startAssignmentActivityObserver: async () => ({stop:async()=>{}}),
+  RedisClient: class { async connect(){} close(){} }, taskEvent: (_, event, envelope, extra) => ({ event, ...extra }), eventsKey: () => "events", xaddJson: async () => {},
   readChannelConfig: () => cfg, createRuntime: () => runtime, workflowReminderIsStale: async () => false, isContextOnlyEnvelope: () => true,
   appendLeaderTeamContext: async t => t, appendRedisTeamCompletionGuidance: t => t,
   startConsumer: async (_, fn) => { receive = fn; return { stop: async () => {} }; },
@@ -50,15 +51,16 @@ test("completion aliases are normalized before effects and validation errors rem
  let receive, release; const delivered = [];
  const cfg = { enabled: true, teamId: "12", memberId: "writer", embeddedTimeoutSeconds: 10 };
  const runtime = {
-  isTaskTerminal: async () => true, withActiveEnvelope: async (_, fn) => fn(),
+  isActiveTaskCompleted: () => false, isTaskTerminal: async () => true, withActiveEnvelope: async (_, fn) => fn(),
   completeTask: async args => {
    if (!["succeeded", "failed", "cancelled"].includes(args.status)) throw Error("team_complete_task status must be succeeded, failed or cancelled");
    if (args.summary === "uncertain") throw Error("private-token-canary");
    delivered.push(args); return { decision: "accepted" };
   },
+  send: async args => { delivered.push(args); return args; },
   statusContext: async () => ({ status: [{ memberId: "writer" }], workflow: { ledgerVersion: 7, available: true } }),
  };
- const protocol = { readChannelConfig: () => cfg, createRuntime: () => runtime, workflowReminderIsStale: async () => false,
+ const protocol = { startAssignmentActivityObserver: async () => ({stop:async()=>{}}), RedisClient: class { async connect(){} close(){} }, taskEvent: (_, event, envelope, extra) => ({ event, ...extra }), eventsKey: () => "events", xaddJson: async () => {}, readChannelConfig: () => cfg, createRuntime: () => runtime, workflowReminderIsStale: async () => false,
   isContextOnlyEnvelope: () => true, appendLeaderTeamContext: async t => t, appendRedisTeamCompletionGuidance: t => t,
   startConsumer: async (_, fn) => { receive = fn; return { stop: async () => {} }; } };
  const native = { admit: () => new Promise(resolve => { release = resolve; }), readLog: async () => 0,
@@ -91,6 +93,8 @@ test("completion aliases are normalized before effects and validation errors rem
   const context = await (await call("status", {}, "team_status")).json();
   assert.deepEqual(context.result, [{ memberId: "writer" }]);
   assert.equal(context.workflow.ledgerVersion, 7);
+  const send = await (await call("content-alias", { to: "leader", content: "actual message" }, "team_send")).json();
+  assert.equal(send.result.text, "actual message");
   const failed = await call("uncertain", { status: "done", summary: "uncertain" });
   assert.equal(failed.status, 500);
   assert.ok(!(await failed.text()).includes("private-token-canary"));

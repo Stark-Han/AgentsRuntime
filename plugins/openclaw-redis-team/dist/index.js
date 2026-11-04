@@ -2932,6 +2932,7 @@ function isWorkflowReminderEnvelope(envelope) {
     "leader_synthesis_reminder",
     "root_coordination_recovery",
     "root_assignment_recovery",
+    "delivery_supplement",
   ].includes(intent) || [
     "leader_decision_reminder",
     "leader_synthesis_reminder",
@@ -3075,12 +3076,12 @@ function normalizedSessionContentType(value) {
   return trim(value).toLowerCase().replace(/[-_]/g, "");
 }
 
-async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log, observe }) {
-  if (!cfg?.redisUrl || !envelope || isContextOnlyEnvelope(envelope)) {
+async function startAssignmentActivityObserver({ cfg, envelope, startedAt, log, observe, observeContext = false }) {
+  if (!cfg?.redisUrl || !envelope || (isContextOnlyEnvelope(envelope) && !observeContext)) {
     return { stop: async () => {} };
   }
   const rootTaskId = preferredRootTaskId(envelope.rootTaskId, envelope.taskId);
-  const assignmentId = trim(envelope.assignmentId || envelope.workId);
+  const assignmentId = trim(envelope.assignmentId || envelope.workId) || "root-owner-observation";
   if (!rootTaskId || !assignmentId) {
     return { stop: async () => {} };
   }
@@ -3684,8 +3685,13 @@ async function readTeamWorkflowContext(cfg, envelope) {
           resultMarkdown: text,
           resultTruncated: item.acceptedResult.resultTruncated === true || text.length < original.length,
           artifactRefs: Array.isArray(item.acceptedResult.artifactRefs) ? item.acceptedResult.artifactRefs.slice(0, 64) : [],
+          supplementaryText: String(item.acceptedResult.supplementaryText || "").slice(0, Math.min(4000,resultBudget)),
+          supplementTruncated: item.acceptedResult.supplementTruncated === true,
+          supplementSourceRecordId: item.acceptedResult.supplementSourceRecordId,
+
         };
       }
+      resultBudget -= Math.min(resultBudget, String(result.acceptedResult?.supplementaryText || "").length);
       assignments[id] = result;
     }
     return {

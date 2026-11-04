@@ -4,8 +4,8 @@ import { Context, Effect } from "effect"
 import { Model } from "@opencode/schema/model"
 
 export class GovernanceError extends Error {
-  constructor(readonly revoked = false) {
-    super(revoked ? "当前模型不可用，本轮任务已中止，请重新选择模型" : "模型授权检查暂时不可用，已停止当前任务，请稍后重试")
+  constructor(readonly revoked = false, readonly reason = "unavailable") {
+    super(revoked ? "当前模型不可用，本轮任务已中止，请重新选择模型" : `模型授权检查暂时不可用，已停止当前任务，请稍后重试 [${reason}]`)
   }
 }
 
@@ -84,9 +84,9 @@ async function request(path: string, body?: object): Promise<unknown> {
     method: body === undefined ? "GET" : "POST", redirect: "error",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(2500),
-  }).catch(() => { throw new GovernanceError() })
+  }).catch((error) => { throw new GovernanceError(false, error?.name === "TimeoutError" ? "timeout" : "transport") })
   if (response.status === 403) throw new GovernanceError(true)
-  if (!response.ok) throw new GovernanceError()
+  if (!response.ok) throw new GovernanceError(false, response.status >= 500 ? "service_unavailable" : "protocol_rejected")
   return response.json().catch(() => { throw new GovernanceError() })
 }
 
