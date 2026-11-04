@@ -5,29 +5,32 @@ import { Effect, Schema } from "effect"
 import { Governance } from "./clawmanager-governance.js"
 import { Permission } from "./permission.js"
 
-const Input = Schema.StructWithRest(Schema.Struct({
+const optionalFields = {
  status: Schema.optional(Schema.String), summary: Schema.optional(Schema.String),
  resultMarkdown: Schema.optional(Schema.String), text: Schema.optional(Schema.String),
  message: Schema.optional(Schema.String), to: Schema.optional(Schema.String),
  memberId: Schema.optional(Schema.String), progress: Schema.optional(Schema.Number),
  eventKind: Schema.optional(Schema.String), intent: Schema.optional(Schema.String),
+ scope: Schema.optional(Schema.Literals(["member", "team"])), kind: Schema.optional(Schema.Literals(["plan", "context", "review", "final"])),
  path: Schema.optional(Schema.String), content: Schema.optional(Schema.String),
  artifactRefs: Schema.optional(Schema.Array(Schema.String)),
  reviewVerdict: Schema.optional(Schema.String), reviewedAssignmentId: Schema.optional(Schema.String),
  reviewedRevision: Schema.optional(Schema.Number), reviewedArtifactRefs: Schema.optional(Schema.Array(Schema.String)),
-}), [Schema.Record(Schema.String, Schema.Unknown)])
+}
+const Input = Schema.StructWithRest(Schema.Struct(optionalFields), [Schema.Record(Schema.String, Schema.Unknown)])
 const CompletionInput = Schema.StructWithRest(Schema.Struct({
+ ...optionalFields,
  status: Schema.Literals(["succeeded", "failed", "cancelled", "completed", "done", "success"]),
  summary: Schema.String,
 }), [Schema.Record(Schema.String, Schema.Unknown)])
 class TeamArgumentError extends Error {}
 const descriptions = {
- team_send: "Send a real assignment, handoff, question or blocker to a Team member. Do not repeat an existing assignment. Use team_complete_task for delivery.",
+ team_send: "Use to and text to send a real assignment, handoff, question or blocker to a Team member. Do not repeat an existing assignment. Use team_complete_task for delivery.",
  team_status: "Read current Team member status and the current root's accepted assignment results. Shared task files are dispatch snapshots, not the current ledger. Do not reassign work already accepted or running.",
  team_update_progress: "Report actual progress with status and summary. Active assignment identity is inherited automatically.",
  team_complete_task: "Submit actual work using status=succeeded, failed or cancelled and summary. Completed/done/success are accepted success aliases. Put the full answer in resultMarkdown and actual artifactRefs only when applicable; a text answer needs no file. Assignment identity is inherited. Ordinary replies do not complete Team work. Worker delivery does not complete the Leader root. Reuse existing results when correcting a missed receipt.",
  team_artifact_read: "Read a UTF-8 file in this Team shared workspace using path.",
- team_artifact_write: "Atomically write a UTF-8 Team artifact using path and content.",
+ team_artifact_write: "Atomically write a UTF-8 Team artifact using path and content. A simple file name uses the current member/assignment. For a Leader plan or final report use scope=team and kind=plan or final; the corresponding directory is added automatically. Reuse exact canonical paths returned by tools; never invent or duplicate a prefix.",
  team_artifact_list: "List this Team's artifacts using an optional path.",
  team_artifact_mkdir: "Create a member-scoped Team artifact directory using path.",
  team_artifact_preview: "Get a signed read-only Team file preview using path. Do not run temporary preview servers.",
@@ -72,6 +75,8 @@ export const Plugin = {
         }
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
         if (!response.ok) {
+         if (response.status === 422 && body?.error_code === "TEAM_INVALID_ARGUMENT")
+          throw new TeamArgumentError("The Team path or arguments are invalid. Use a simple file name under the current assignment, or scope=team and kind=plan/final for Leader reports. Nothing was published by this rejected call.")
          if (response.status === 422 && body?.error_code === "TEAM_INVALID_COMPLETION")
           throw new TeamArgumentError("Use status=succeeded, failed or cancelled and a non-empty summary. Task identity is inherited; a text answer needs no file.")
          throw new Error()

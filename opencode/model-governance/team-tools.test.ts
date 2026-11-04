@@ -34,9 +34,13 @@ test("native Team tools inherit task identity and preserve existing optional wor
   yield* ClawManagerTeamTools.Plugin.effect(yield* PluginHost.make(yield* Plugin.Service))
   const snapshot = yield* (yield* Tool.Service).snapshot()
   expect(snapshot.definitions.filter(item => item.name.startsWith("team_")).length).toBe(9)
+  const completion = snapshot.definitions.find(item => item.name === "team_complete_task")!
+  const schema = completion.inputSchema as { properties: Record<string, unknown>; required: string[] }
+  for (const key of ["resultMarkdown", "text", "artifactRefs", "reviewVerdict", "reviewedAssignmentId", "reviewedRevision", "reviewedArtifactRefs"]) expect(schema.properties).toHaveProperty(key)
+  expect(schema.required.sort()).toEqual(["status", "summary"])
   const sessionID = Session.ID.make("ses_team")
   const run = (input: Record<string, unknown>, session = sessionID) => Governance.withPrimary(sessionID, "clawmanager", [{ type: "user", id: "msg_team_input" }], snapshot.execute({ sessionID: session, agent: Agent.ID.make("build"), messageID: SessionMessage.ID.make("msg_answer"), call: { type: "tool-call", id: "call_team", name: "team_complete_task", input } }))
-  const input = { status: "succeeded", summary: "delivered", phaseDispositions: [{ phaseId: "P1", decision: "skipped", reason: "not needed" }] }
+  const input = { status: "succeeded", summary: "delivered", resultMarkdown: "Full actual answer", artifactRefs: [], reviewedRevision: 2, phaseDispositions: [{ phaseId: "P1", decision: "skipped", reason: "not needed" }] }
   yield* run(input)
   expect(calls).toHaveLength(1)
   yield* run({ status: "done", summary: "plain text answer" })
