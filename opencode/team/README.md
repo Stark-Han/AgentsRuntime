@@ -26,8 +26,9 @@ After a restart, the shared protocol's durable business receipts remain the
 authority; an uncertain external operation is not declared successful.
 
 Presence and assignment monitoring run independently of a model turn. The
-supervisor reads the bounded durable native event log for execution evidence;
-reasoning content and raw tool arguments/results are not projected. A deadline
+supervisor reads the bounded materialized native message records for the exact
+admitted input; older clients may use the durable event-log fallback. Reasoning
+content and raw tool arguments/results are not projected. A deadline
 interrupts the accepted native execution and checks actual idle before another
 delivery can own the member. Unknown stop retains the current binding. Shutdown
 stops inbox admission first and leaves unprocessed messages pending.
