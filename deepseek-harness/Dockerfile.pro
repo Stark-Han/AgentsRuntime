@@ -11,6 +11,7 @@ COPY deepseek-harness/native/source-lock.json deepseek-harness/scripts/verify-na
 RUN node /opt/clawmanager-dsh/verify-native.mjs /opt/clawmanager-dsh/native-manifest.json
 
 FROM --platform=$BUILDPLATFORM ${GO_BUILDER_IMAGE} AS clawmanager-agent-builder
+ARG GOPROXY
 
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -36,6 +37,7 @@ RUN set -eux; \
       -o /out/clawmanager-agent ./cmd
 
 FROM ${GO_BUILDER_IMAGE} AS agent-builder
+ARG GOPROXY
 
 ARG TARGETOS=linux
 ARG TARGETARCH
