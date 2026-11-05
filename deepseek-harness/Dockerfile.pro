@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 ARG WEBTOP_RUNTIME_BASE_IMAGE=ghcr.io/yuan-lab-llm/agentsruntime/openclaw:latest
+ARG GO_BUILDER_IMAGE=golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81
 
 FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS native-builder
 COPY deepseek-harness/native/package.json deepseek-harness/native/package-lock.json /opt/clawmanager-dsh/
@@ -9,7 +10,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY deepseek-harness/native/source-lock.json deepseek-harness/scripts/verify-native.mjs /opt/clawmanager-dsh/
 RUN node /opt/clawmanager-dsh/verify-native.mjs /opt/clawmanager-dsh/native-manifest.json
 
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS clawmanager-agent-builder
+FROM --platform=$BUILDPLATFORM ${GO_BUILDER_IMAGE} AS clawmanager-agent-builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -34,7 +35,7 @@ RUN set -eux; \
       go build -trimpath -ldflags="-s -w -X main.version=${AGENT_VERSION}" \
       -o /out/clawmanager-agent ./cmd
 
-FROM golang:1.26-bookworm AS agent-builder
+FROM ${GO_BUILDER_IMAGE} AS agent-builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH
