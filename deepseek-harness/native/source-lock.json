@@ -3,6 +3,7 @@
   "dshIntegrity": "sha512-H+E9HLnHf7fJqzen84Z9Bq8ggb5xbrcbyhZjXTJLE9NabHr3zteGvTRvdvGkxPl4ov80is4WLglFmSo+/olJjg==",
   "nodeImage": "node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20",
   "sandboxOriginalSHA256": "be6e1107871cf8d94c040090b13c405bc833822e2f51ed5280e93eececf762be",
+  "sandboxPatchedSHA256": "aa6e2aecf525c476ff8a8b51b70e6d9864b0e6ff2b7f5304e1674209ad276a0d",
   "cordis": "4.0.5",
   "hmr": "@deepseek-ai/dsh-hmr@0.2.1-rc.3",
   "loader": "@deepseek-ai/cordis-plugin-loader@1.0.6",

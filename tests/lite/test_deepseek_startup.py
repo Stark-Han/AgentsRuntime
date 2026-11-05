@@ -32,6 +32,7 @@ def main():
     created = False
     try:
         command = ["run", "-d", "--name", name, "--network", "none", "--cap-drop", "ALL",
+                   "--ulimit", "nofile=1024:65536",
                    "--security-opt", "no-new-privileges", "--user", "200099:200099",
                    "--memory", "1g", "--pids-limit", "256", "--tmpfs", "/tmp:rw,mode=1777"]
         for setting in ("HOME=/tmp/dsh-test", "CLAWMANAGER_GATEWAY_PORT=21000",
@@ -52,6 +53,15 @@ def main():
             time.sleep(1)
         else:
             raise AssertionError("DSH startup deadline exceeded")
+        # The preparation script must raise the actual child's limit, not only
+        # a disposable shell's value. PID1 is the managed proxy in this fixture.
+        actual = docker("exec", name, "python3", "-c",
+                        "from pathlib import Path; "
+                        "p=Path('/proc/1/task/1/children').read_text().split(); "
+                        "assert p; "
+                        "line=next(x for x in Path('/proc/'+p[0]+'/limits').read_text().splitlines() if x.startswith('Max open files')); "
+                        "assert int(line.split()[3]) == 65536, line; print('native nofile=65536')")
+        report["native_nofile"] = 65536
         # Observe plugin activation AND disposal after real watched edits.
         plugin = ("import fs from 'node:fs'; export default (ctx) => { "
                   "fs.writeFileSync('/tmp/dsh-test/hmr-applied', 'yes'); "
