@@ -15,13 +15,14 @@ assert.equal(pkg.version, '0.2.1-rc.3');
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cm-dsh-native-contract-'));
 const requests = [];
 let holdObserved = false;
+let heldRequestClosed = false;
 const model = createServer(async (req, res) => {
   const chunks = []; for await (const chunk of req) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks)); requests.push(body);
   assert.equal(req.headers.authorization, 'Bearer contract-fixture');
   assert.equal(req.url, '/v1/chat/completions');
   if (JSON.stringify(body.messages.at(-1)).includes('M0_HOLD')) {
-    holdObserved = true; req.on('close', () => res.destroy()); return;
+    holdObserved = true; res.on('close', () => { heldRequestClosed = true; }); return;
   }
   const usedTool = body.messages.some(message => message.role === 'tool');
   const delta = usedTool || body.messages.some(m => JSON.stringify(m).includes('M0_RESUME'))
@@ -89,7 +90,7 @@ async function start() {
 async function stop() {
   if (!child || child.exitCode !== null) return;
   const closed = new Promise(resolve => child.once('exit', resolve)); child.kill('SIGTERM');
-  await Promise.race([closed, sleep(15000).then(() => { throw new Error('Native stop not confirmed'); })]);
+  await Promise.race([closed, sleep(15000, undefined, { ref: false }).then(() => { throw new Error('Native stop not confirmed'); })]);
 }
 async function rpc(method, args = {}) {
   const parameters = method === 'session/list' ? { _request: args } : { request: args };
@@ -129,7 +130,10 @@ try {
   const before = requests.length;
   await prompt(created.sessionId, 'M0_HOLD');
   while (!holdObserved && Date.now() < until + 30000) await sleep(100);
-  assert.ok(holdObserved); await rpc('session/cancel', { sessionId: created.sessionId }); await idle(created.sessionId);
+  assert.ok(holdObserved);
+  assert.ok((await rpc('session/list')).items.some(item => item.sessionId === created.sessionId && item.running), 'Cancel must target an actually running model request');
+  await rpc('session/cancel', { sessionId: created.sessionId }); await idle(created.sessionId);
+  assert.ok(heldRequestClosed, 'Cancellation must close the held model request');
   assert.ok(requests.length > before);
   await stop(); await start();
   await prompt(created.sessionId, 'M0_RESUME'); await sleep(500); await idle(created.sessionId);

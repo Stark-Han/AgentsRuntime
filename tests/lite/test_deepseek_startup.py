@@ -22,7 +22,7 @@ def main():
 
     def docker(*command, check=True):
         return subprocess.run(["docker", *command], capture_output=True, text=True,
-                              timeout=25, check=check)
+                              encoding="utf-8", errors="replace", timeout=25, check=check)
 
     def ready():
         return docker("exec", name, "curl", "--silent", "--fail", "--max-time", "3",
@@ -57,7 +57,7 @@ def main():
         # a disposable shell's value. PID1 is the managed proxy in this fixture.
         actual = docker("exec", name, "python3", "-c",
                         "from pathlib import Path; "
-                        "p=Path('/proc/1/task/1/children').read_text().split(); "
+                        "p=sorted({pid for task in Path('/proc/1/task').glob('*/children') for pid in task.read_text().split()}); "
                         "assert p; "
                         "line=next(x for x in Path('/proc/'+p[0]+'/limits').read_text().splitlines() if x.startswith('Max open files')); "
                         "assert int(line.split()[3]) == 65536, line; print('native nofile=65536')")
