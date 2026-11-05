@@ -146,7 +146,7 @@ func managedDesktopInstanceAllowed() bool {
 		return true
 	}
 	switch product {
-	case "hermes", "opencode":
+	case "hermes", "opencode", "deepseek-harness":
 		return true
 	default:
 		return false

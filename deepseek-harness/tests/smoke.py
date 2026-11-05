@@ -8,6 +8,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -197,7 +198,8 @@ def main():
         web_env = dict(env, CLAWMANAGER_LLM_PROVIDER_MODELS='["auto/auto","managed/demo"]',
                        CLAWMANAGER_LLM_MODEL='["auto","demo"]', CLAWMANAGER_LLM_CONTEXT_WINDOW='0',
                        CLAWMANAGER_LLM_CONTEXT_WINDOWS='{"auto":0,"demo":32000}')
-        for mode in ['lite', 'pro']:
+        for mode in sys.argv[1:] or ['lite', 'pro']:
+            assert mode in ['lite', 'pro'], 'mode must be lite or pro'
             check_web(mode, web_env.copy(), root)
         canonical = subprocess.check_output(['/usr/local/bin/clawmanager-agent', 'llm-config', '--format', 'canonical',
                                              '--fallback-provider', 'clawmanager', '--default-model', 'auto'], env=env, text=True)
