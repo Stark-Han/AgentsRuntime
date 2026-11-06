@@ -22,6 +22,8 @@ test('DSH input is stable, response loss does not duplicate, and generations/too
   await assert.rejects(host.toolIdentity({agent:{},callId:'old'}),/current native/);
   sessions.get(agent.id).push({type:'user/message',data:{source:{kind:'clawmanager-team',inputId:nativeIdentity(identity).message,teamId:'1',memberId:'worker',generation:3}}});
   assert.equal((await host.toolIdentity({agent,callId:'native-1'})).generation,3);
+  sessions.get(agent.id).push({type:'user/message',data:{source:{kind:'agent-instructions'}}});
+  assert.equal((await host.toolIdentity({agent,callId:'with-native-instructions'})).generation,3);
   sessions.get(agent.id).push({type:'user/message',data:{source:{kind:'user'}}});
   await assert.rejects(host.toolIdentity({agent,callId:'human-session'}),/not owned/);
   flushFailure=true;const next={...identity,messageId:'in-2'};
@@ -42,6 +44,8 @@ test('public answer observation never exports reasoning, failures, or another in
   {type:'assistant/message',seq:1,time:2,data:{message:{id:'answer',content:[{type:'reasoning',text:'private'},{type:'text',text:'public'}]}}},
   {type:'turn/end',seq:2,time:3,data:{reason:{kind:'completed'}}}];
  assert.equal(turnFacts(events,'input').publicText.text,'public');
+ const withInstructions=[events[0],{type:'user/message',seq:0,time:1,data:{source:{kind:'agent-instructions'}}},...events.slice(1)];
+ assert.equal(turnFacts(withInstructions,'input').publicText.text,'public');
  assert.equal(turnFacts(events,'other').consumed,false);
  const failed=turnFacts([...events,{type:'turn/end',seq:3,time:4,data:{reason:{kind:'error'}}}],'input');assert.equal(failed.failed,true);assert.equal(failed.publicText,undefined);
  const beforeRequest=turnFacts([{type:'agent/inbox/spliced',seq:0,time:1,data:{inserted:[{source:{kind:'clawmanager-team',inputId:'input'}}]}},{type:'turn/end',seq:1,time:2,data:{reason:{kind:'error'}}}],'input');

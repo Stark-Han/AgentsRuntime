@@ -10,6 +10,7 @@ import * as protocol from '/opt/clawmanager-dsh/adapter/deepseek-harness/team/pr
 
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-team-native-')),shared=path.join(root,'shared');
 await fs.mkdir(shared);await fs.mkdir(path.join(root,'workspace'));
+await fs.writeFile(path.join(root,'workspace','AGENTS.md'),'Use the registered Team tools for the assignment. Preserve public results.\n');
 const teamId=String(Date.now());let calls=0,raw='';
 const model=createServer(async(req,res)=>{
  const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));
@@ -62,7 +63,13 @@ try{
  await stopNative();raw='';startNative();
  await wait(async()=>{const value=await redis.command('HGET',prefix+':presence','worker');return value&&JSON.parse(value).lastSeenAt!==oldSeen;});
  await redis.command('XADD',prefix+':inbox:worker','*','payload',JSON.stringify(envelope));await sleep(800);assert.equal(calls,before);assert.equal(await fs.readFile(path.join(journalDir,journals[0]),'utf8'),journal);
- console.log(JSON.stringify({native:'0.2.1-rc.3',presence:true,full_tool_schema:true,minimal_receipt:true,artifact:true,public_supplement:true,duplicate_model_execution:false,process_restart_retains_input:true,confirmed_stop:true}));
+ const match=raw.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_%.-]+/);assert.ok(match);
+ const login=await fetch(match[0],{redirect:'manual'}),origin=new URL(match[0]).origin,cookie=login.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');
+ const rpc=async(method,args)=>{const r=await fetch(origin+'/api/'+method,{method:'POST',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:'fixture-'+Date.now(),method,payload:{args:method==='session/list'?{_request:args}:{request:args}}})});return(await r.json()).result.value;};
+ const session=(await rpc('session/list',{})).items[0];const projection=await rpc('session/projections',{sessionId:session.sessionId});
+ const page=await rpc('session/page',{address:{kind:'session',sessionId:session.sessionId},throughSeq:projection.asOfSeq});
+ assert.ok(page.records.some(x=>x.event?.type==='user/message'&&x.event.data.source?.kind==='agent-instructions'),'the real native AGENTS.md context must be exercised');
+ console.log(JSON.stringify({native:'0.2.1-rc.3',presence:true,full_tool_schema:true,minimal_receipt:true,artifact:true,public_supplement:true,native_agent_instructions:true,duplicate_model_execution:false,process_restart_retains_input:true,confirmed_stop:true}));
 }catch(e){
  console.error('fixture model calls:',calls);
  const match=raw.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_%.-]+/);

@@ -4,6 +4,9 @@ import { createHash } from 'node:crypto';
 import { nativeIdentity } from '../../opencode/team/native-client.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+// Native-generated context augments the current input; it is not another
+// user/Team delivery. Keep this allowlist narrow: unknown sources retire tools.
+const nativeContext = source => ['runtime-context', 'time-context', 'agent-instructions'].includes(source?.kind);
 export function sessionIdentity(identity) {
   const h = hash([identity.teamId, identity.memberId, identity.taskId, identity.messageId]);
   return `session-${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20,32)}`;
@@ -17,7 +20,7 @@ export function turnFacts(events, input) {
     if (e.type === 'user/message') {
       const source = e.data.source;
       if (source?.kind === 'clawmanager-team') owns = source.inputId === input;
-      else if (!['runtime-context', 'time-context'].includes(source?.kind)) owns = false;
+      else if (!nativeContext(source)) owns = false;
       if (owns) facts.consumed = true;
     }
     if (!owns) continue;
@@ -138,8 +141,11 @@ export class DshHost {
     if (!current?.agent || exec.agent !== current.agent || this.ctx.agents.get(current.id) !== exec.agent || !exec.callId)
       throw Error('Team tools require the current native Team execution');
     const { events } = await this.events(current.id);
-    const sources = events.filter(e => e.type === 'user/message' && !['runtime-context','time-context'].includes(e.data.source?.kind));
-    if (sources.at(-1)?.data.source?.inputId !== current.ids.message) throw Error('Native input is not owned by Team');
+    const sources = events.filter(e => e.type === 'user/message' && !nativeContext(e.data.source));
+    const source = sources.at(-1)?.data.source;
+    if (source?.kind !== 'clawmanager-team' || source.inputId !== current.ids.message ||
+        String(source.teamId) !== current.identity.teamId || source.memberId !== current.identity.memberId ||
+        source.generation !== current.identity.generation) throw Error('Native input is not owned by Team');
     return { sessionID: current.ids.session, taskID: current.ids.message, generation: current.identity.generation, callID: exec.callId };
   }
   async close() {
