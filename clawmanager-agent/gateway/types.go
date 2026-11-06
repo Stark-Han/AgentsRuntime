@@ -283,6 +283,7 @@ type RegisterResponse struct {
 }
 
 type HeartbeatPayload struct {
+	Capacity       int       `json:"capacity"`
 	PodID          int       `json:"pod_id,omitempty"`
 	Namespace      string    `json:"namespace"`
 	PodName        string    `json:"pod_name"`
