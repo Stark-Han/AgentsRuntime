@@ -32,7 +32,7 @@ ENV CLAWMANAGER_RUNTIME_TYPE=deepseek-harness \
     RUNTIME_AGENT_DATA_DIR=/var/lib/clawmanager-agent \
     RUNTIME_GATEWAY_COMMAND=/usr/local/bin/start-deepseek-harness-gateway \
     DSH_TELEMETRY_DISABLED=1 \
-    CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION=""
+    CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION="dsh-team-v1"
 
 RUN set -eux; \
     apt-get update; \
@@ -95,6 +95,14 @@ RUN set -eux; \
       /usr/local/bin/deepseek-harness-lite-entrypoint; \
     mkdir -p /var/lib/clawmanager-agent /workspaces; \
     chmod 0755 /var/lib/clawmanager-agent /workspaces
+
+COPY plugins/openclaw-redis-team/dist/index.js /opt/clawmanager-dsh/adapter/plugins/openclaw-redis-team/dist/index.js
+COPY opencode/team/bridge.mjs opencode/team/native-client.mjs opencode/team/delivery-outbox.mjs opencode/team/build-protocol.mjs /opt/clawmanager-dsh/adapter/opencode/team/
+COPY deepseek-harness/team/host.mjs deepseek-harness/team/plugin.mjs deepseek-harness/team/build.mjs deepseek-harness/team/schema.mjs /opt/clawmanager-dsh/adapter/deepseek-harness/team/
+COPY deepseek-harness/config/team.cordis.patch.yml /usr/local/share/deepseek-harness/team.cordis.patch.yml
+RUN node /opt/clawmanager-dsh/adapter/deepseek-harness/team/build.mjs /opt/clawmanager-dsh/adapter/deepseek-harness/team/protocol.mjs \
+    && printf '{"protocol":"dsh-team-v1","native":"0.2.1-rc.3"}\n' > /opt/clawmanager-dsh/adapter/deepseek-harness/team/capability.json \
+    && node /opt/clawmanager-dsh/verify-native.mjs /opt/clawmanager-dsh/native-manifest.json --patched
 
 EXPOSE 19090 20300-20399
 

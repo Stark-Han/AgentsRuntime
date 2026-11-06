@@ -19,14 +19,14 @@ function completionArguments(args) {
 
 // One bridge belongs to one supervised member process. Protocol/state semantics
 // come from the same source as the existing Team adapter.
-export async function createBridge({ protocol, native, environment = process.env, log = console }) {
+export async function createBridge({ protocol, native, environment = process.env, log = console, runtimeName = "OpenCode" }) {
  const cfg = protocol.readChannelConfig({});
  const runtime = protocol.createRuntime({ config: {}, logger: log });
  const generation = Number(environment.CLAWMANAGER_GATEWAY_GENERATION);
  // Pro's initial instance generation is zero; Lite Gateway generations start
  // at one. Keep the original generation for governance and fencing.
  const managedPro = environment.CLAWMANAGER_AGENT_ENABLED === "true" && /^[1-9][0-9]*$/.test(environment.INSTANCE_ID || "");
- if (!cfg.enabled || !cfg.teamId || !cfg.memberId || !Number.isSafeInteger(generation) || generation < 0 || generation === 0 && !managedPro) throw new Error("OpenCode Team identity unavailable");
+ if (!cfg.enabled || !cfg.teamId || !cfg.memberId || !Number.isSafeInteger(generation) || generation < 0 || generation === 0 && !managedPro) throw new Error(`${runtimeName} Team identity unavailable`);
  const token = randomBytes(32).toString("hex");
  let active = null, stopped = false, nativeGone = false, consumer, controlTimer, controlBusy = false;
  const publishDelivery = async(envelope,payload) => {
@@ -91,11 +91,11 @@ export async function createBridge({ protocol, native, environment = process.env
  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
 
  async function consume(envelope) {
-  if (stopped) throw new Error("OpenCode Team bridge is stopping");
+  if (stopped) throw new Error(`${runtimeName} Team bridge is stopping`);
   if (await protocol.workflowReminderIsStale(cfg, envelope, log)) return;
   const identity = { teamId: String(cfg.teamId), memberId: cfg.memberId, taskId: String(envelope.rootTaskId || envelope.taskId || ""), messageId: String(envelope.messageId || ""), generation };
   const ids = nativeIdentity(identity);
-  if (active) throw new Error("OpenCode member already owns an execution");
+  if (active) throw new Error(`${runtimeName} member already owns an execution`);
   const current = { identity, ids, interrupted: false, calls: new Map() };
   active = current;
   const startedAt = Date.now();
@@ -111,8 +111,8 @@ export async function createBridge({ protocol, native, environment = process.env
   try {
    let result = await runtime.withActiveEnvelope(envelope, async () => {
     if (!protocol.isContextOnlyEnvelope(envelope)) {
-     await protocol.writeLocalStatus(cfg, { availability: "busy", runtimeStatus: "running", currentTaskId: identity.taskId, currentAssignmentId: envelope.assignmentId || envelope.workId, currentWorkId: envelope.workId || envelope.assignmentId, currentSourceMessageId: envelope.messageId, currentRevision: Math.max(1, Number(envelope.revision) || 1), lastSummary: "OpenCode Team task started" });
-     await emitTaskEvent("task_started", { availability: "busy", runtimeStatus: "running", summary: "OpenCode Team task started" });
+     await protocol.writeLocalStatus(cfg, { availability: "busy", runtimeStatus: "running", currentTaskId: identity.taskId, currentAssignmentId: envelope.assignmentId || envelope.workId, currentWorkId: envelope.workId || envelope.assignmentId, currentSourceMessageId: envelope.messageId, currentRevision: Math.max(1, Number(envelope.revision) || 1), lastSummary: `${runtimeName} Team task started` });
+     await emitTaskEvent("task_started", { availability: "busy", runtimeStatus: "running", summary: `${runtimeName} Team task started` });
      stopHeartbeat = protocol.startAssignmentHeartbeat({ envelope, emitTaskEvent, log, isTerminal: () => runtime.isActiveTaskCompleted(envelope.taskId) });
 
     }
@@ -123,7 +123,7 @@ export async function createBridge({ protocol, native, environment = process.env
     const deadline = Date.now() + cfg.embeddedTimeoutSeconds * 1000;
     let idle = 0, cursor = 0, ownsInput = false;
     while (!current.interrupted) {
-     if (Date.now() >= deadline) { await stopExecution(); throw new Error("OpenCode Team execution timed out after confirmed interrupt"); }
+     if (Date.now() >= deadline) { await stopExecution(); throw new Error(`${runtimeName} Team execution timed out after confirmed interrupt`); }
      try {
      let nativeFacts;
      if (native.inspectTurn) {
@@ -176,7 +176,7 @@ export async function createBridge({ protocol, native, environment = process.env
      }
      await sleep(1000, undefined, { signal: abort.signal });
     }
-    if (current.nativeFailure) throw new Error("OpenCode native execution failed after confirmed idle");
+    if (current.nativeFailure) throw new Error(`${runtimeName} native execution failed after confirmed idle`);
     // Publish only a final public answer attached to this turn's accepted
     // explicit receipt. Intermediate native prose/reasoning stays private.
     if (runtime.isActiveTaskCompleted(identity.taskId) && current.deliveryText?.recordId && current.deliveryText.text.trim()) {
@@ -188,12 +188,12 @@ export async function createBridge({ protocol, native, environment = process.env
       sourceOccurredAt: body.at, lateProjection: true, nonAuthoritative: true, stateEffect: "none",
       rootTaskTerminal: false, text: body.text.slice(0, 64000), textTruncated: body.text.length > 64000,
       summary: "Final public answer from the acknowledged member turn", visibleToChat: true, chatKind: "delivery_supplement" };
-     if(deliveries){await deliveries.save(envelope,deliveryPayload); await deliveries.flush().catch(()=>log.warn?.("OpenCode public delivery retained for publication retry"));}
+     if(deliveries){await deliveries.save(envelope,deliveryPayload); await deliveries.flush().catch(()=>log.warn?.(`${runtimeName} public delivery retained for publication retry`));}
      else await publishDelivery(envelope,deliveryPayload);
     }
     // Native idle is an execution fact, never a business completion receipt.
    }, cfg);
-   if (current.interrupted || stopped) throw new Error("OpenCode Team execution stopped; original work is retained");
+   if (current.interrupted || stopped) throw new Error(`${runtimeName} Team execution stopped; original work is retained`);
    const terminal = await runtime.isTaskTerminal(cfg, envelope);
    if (!terminal) {
     const durable = await protocol.readTurnFacts(cfg, envelope);
@@ -212,7 +212,7 @@ export async function createBridge({ protocol, native, environment = process.env
    }
   } finally {
    stopHeartbeat();
-   await activity?.stop(current.interrupted ? "cancelled" : current.nativeFailure ? "failed" : "turn_finished").catch(() => log.warn?.("OpenCode Team activity close remains unconfirmed"));
+   await activity?.stop(current.interrupted ? "cancelled" : current.nativeFailure ? "failed" : "turn_finished").catch(() => log.warn?.(`${runtimeName} Team activity close remains unconfirmed`));
    // If the transport fails, keep identity bound until native execution is
    // proven idle. Do not allow a later delivery to steal its tools.
    if (!current.interrupted) {
@@ -228,16 +228,16 @@ export async function createBridge({ protocol, native, environment = process.env
   port: server.address().port, token,
   async start() {
    const reportFailure = async (envelope,error,stoppedEvidence=false) => {
-    log.error("OpenCode Team delivery failed; original work remains available for recovery");
+    log.error(`${runtimeName} Team delivery failed; original work remains available for recovery`);
     if (await runtime.isTaskTerminal(cfg, envelope)) return;
-    await protocol.writeLocalStatus(cfg, { availability: "busy", runtimeStatus: "recovering", currentTaskId: envelope.taskId, currentAssignmentId: envelope.assignmentId || envelope.workId, lastSummary: "OpenCode Team runtime reconciliation is required" });
+    await protocol.writeLocalStatus(cfg, { availability: "busy", runtimeStatus: "recovering", currentTaskId: envelope.taskId, currentAssignmentId: envelope.assignmentId || envelope.workId, lastSummary: `${runtimeName} Team runtime reconciliation is required` });
     const redis = new protocol.RedisClient(cfg.redisUrl);
     try {
      await redis.connect();
-     await protocol.xaddJson(redis, protocol.eventsKey(cfg), protocol.taskEvent(cfg, "task_progress", envelope, { status: "running", availability: "busy", runtimeStatus: "recovering", recoveryFaultKey: envelope.metadata?.recoveryFaultKey, boundedRecoveryAttempt: envelope.metadata?.boundedRecoveryAttempt, executionStopped: stoppedEvidence || !active, generation, failureCode: /native request failed/.test(String(error)) ? "native_transport_failure" : "native_execution_failure", eventKind: "runtime_reconciliation_needed", failureDomain: "runtime_adapter", retryable: true, stateEffect: "none", nonAuthoritative: true, rootTaskTerminal: false, visibleToChat: false, chatPolicy: "hidden", summary: "OpenCode Team runtime reconciliation is required" }));
+     await protocol.xaddJson(redis, protocol.eventsKey(cfg), protocol.taskEvent(cfg, "task_progress", envelope, { status: "running", availability: "busy", runtimeStatus: "recovering", recoveryFaultKey: envelope.metadata?.recoveryFaultKey, boundedRecoveryAttempt: envelope.metadata?.boundedRecoveryAttempt, executionStopped: stoppedEvidence || !active, generation, failureCode: /native request failed/.test(String(error)) ? "native_transport_failure" : "native_execution_failure", eventKind: "runtime_reconciliation_needed", failureDomain: "runtime_adapter", retryable: true, stateEffect: "none", nonAuthoritative: true, rootTaskTerminal: false, visibleToChat: false, chatPolicy: "hidden", summary: `${runtimeName} Team runtime reconciliation is required` }));
     } finally { redis.close(); }
    };
-   await deliveries?.flush().catch(()=>log.warn?.("OpenCode public delivery remains pending"));
+   await deliveries?.flush().catch(()=>log.warn?.(`${runtimeName} public delivery remains pending`));
    consumer = await protocol.startConsumer(cfg, consume, reportFailure, log);
    // This control probe never runs a model. A failed HTTP read cannot leave
    // the member's identity pinned forever after its process actually exited.
@@ -257,7 +257,7 @@ export async function createBridge({ protocol, native, environment = process.env
     } catch {} finally {controlBusy=false}
    },5000);
    controlTimer.unref?.();
-   if (!consumer) throw new Error("OpenCode Team consumer did not start");
+   if (!consumer) throw new Error(`${runtimeName} Team consumer did not start`);
   },
   async stop({ nativeExited = false } = {}) {
    if (nativeExited) nativeGone = true;

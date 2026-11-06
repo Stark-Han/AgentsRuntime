@@ -46,3 +46,17 @@ func TestProfileUsesManagedHTTPReadiness(t *testing.T) {
 		t.Fatal("HealthChecker() = nil")
 	}
 }
+
+func TestTeamCapabilityCannotBeGrantedByRequest(t *testing.T) {
+	t.Setenv("CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION", "")
+	p := NewProfile("deepseek-harness")
+	env := p.GatewayEnv([]string{"CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION=dsh-team-v1"}, gateway.Config{}, gateway.CreateGatewayRequest{Environment: map[string]string{"CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION": "dsh-team-v1"}}, "/workspaces/deepseek-harness/user-1/instance-4", 20000)
+	for _, e := range env {
+		if e == "CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION=dsh-team-v1" {
+			t.Fatal("request granted image capability")
+		}
+	}
+	if p.RegistrationMetadata(gateway.Config{}).TeamPluginVersion != "" {
+		t.Fatal("non-Team image advertised adapter")
+	}
+}
