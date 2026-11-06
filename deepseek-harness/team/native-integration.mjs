@@ -33,8 +33,10 @@ await new Promise(resolve=>model.listen(0,'127.0.0.1',resolve));
 Object.assign(process.env,{CLAWMANAGER_TEAM_ENABLED:'true',CLAWMANAGER_TEAM_ID:teamId,CLAWMANAGER_TEAM_MEMBER_ID:'worker',CLAWMANAGER_TEAM_ROLE:'worker',CLAWMANAGER_TEAM_REDIS_URL:process.env.REDIS_TEAM_TEST_URL,CLAWMANAGER_TEAM_SHARED_DIR:shared,CLAWMANAGER_GATEWAY_GENERATION:'2',CLAWMANAGER_DEFAULT_PROJECT_PATH:path.join(root,'workspace'),XDG_STATE_HOME:path.join(root,'state')});
 await fs.writeFile(path.join(shared,'team.json'),JSON.stringify({teamId,members:[{memberId:'leader',role:'leader',isLeader:true},{memberId:'worker',role:'worker'}]}));
 const env={...process.env,HOME:root,DSH_HOME:path.join(root,'.dsh'),NARB_DISABLE_NATIVE_CACHE:'1',CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION:'dsh-team-v1',CLAWMANAGER_LLM_API_KEY:'fixture',CLAWMANAGER_LLM_RESOLVED_CONFIG_JSON:JSON.stringify({default_provider:'clawmanager',default_model:'auto',providers:[{provider_id:'clawmanager',model_ids:['auto']}],api_key_env:'CLAWMANAGER_LLM_API_KEY',base_url:`http://127.0.0.1:${model.address().port}/v1`})};
-const child=spawn('dsh',['web','--patch','/usr/local/share/deepseek-harness/managed.cordis.patch.yml','--patch','/usr/local/share/deepseek-harness/team.cordis.patch.yml','--host','127.0.0.1','--port','0','--no-open'],{env,cwd:path.join(root,'workspace'),stdio:['ignore','pipe','pipe']});
-child.stdout.on('data',b=>{raw+=b;});child.stderr.on('data',b=>{raw+=b;});
+let child;
+function startNative(){child=spawn('dsh',['web','--patch','/usr/local/share/deepseek-harness/managed.cordis.patch.yml','--patch','/usr/local/share/deepseek-harness/team.cordis.patch.yml','--host','127.0.0.1','--port','0','--no-open'],{env,cwd:path.join(root,'workspace'),stdio:['ignore','pipe','pipe']});child.stdout.on('data',b=>{raw+=b;});child.stderr.on('data',b=>{raw+=b;});}
+async function stopNative(){if(child.exitCode!==null)return;const ended=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');await Promise.race([ended,sleep(12000,undefined,{ref:false}).then(()=>{child.kill('SIGKILL');throw Error('Native stop timeout');})]);}
+startNative();
 const redis=new protocol.RedisClient(process.env.REDIS_TEAM_TEST_URL);
 const wait=async fn=>{const until=Date.now()+80000;while(Date.now()<until){if(child.exitCode!==null||raw.includes('did not activate'))throw Error('Native plugin startup failed');const result=await fn();if(result)return result;await sleep(200);}throw Error('Native Team condition timed out');};
 const payloads=rows=>(rows||[]).map(row=>JSON.parse(row[1][row[1].indexOf('payload')+1]));
@@ -54,7 +56,12 @@ try{
  assert.ok(events.some(x=>x.eventKind==='delivery_supplement'&&x.text==='DSH native public final answer'));
  assert.match(await fs.readFile(path.join(shared,`artifacts/${envelope.taskId}/members/worker/write/report.md`),'utf8'),/Actual artifact/);
  const before=calls;await redis.command('XADD',prefix+':inbox:worker','*','payload',JSON.stringify(envelope));await sleep(800);assert.equal(calls,before);
- console.log(JSON.stringify({native:'0.2.1-rc.3',presence:true,full_tool_schema:true,minimal_receipt:true,artifact:true,public_supplement:true,duplicate_model_execution:false}));
+ const journalDir=path.join(root,'state','teams',teamId,'worker','dsh-inputs');const journals=await fs.readdir(journalDir);assert.equal(journals.length,1);const journal=await fs.readFile(path.join(journalDir,journals[0]),'utf8');
+ const oldSeen=JSON.parse(await redis.command('HGET',prefix+':presence','worker')).lastSeenAt;
+ await stopNative();raw='';startNative();
+ await wait(async()=>{const value=await redis.command('HGET',prefix+':presence','worker');return value&&JSON.parse(value).lastSeenAt!==oldSeen;});
+ await redis.command('XADD',prefix+':inbox:worker','*','payload',JSON.stringify(envelope));await sleep(800);assert.equal(calls,before);assert.equal(await fs.readFile(path.join(journalDir,journals[0]),'utf8'),journal);
+ console.log(JSON.stringify({native:'0.2.1-rc.3',presence:true,full_tool_schema:true,minimal_receipt:true,artifact:true,public_supplement:true,duplicate_model_execution:false,process_restart_retains_input:true,confirmed_stop:true}));
 }catch(e){
  console.error('fixture model calls:',calls);
  const match=raw.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_%.-]+/);
@@ -66,4 +73,4 @@ try{
  }catch{}
  console.error(raw.replace(/\?token=\S+/g,'?token=[redacted]').slice(-10000));throw e;
 }
-finally{child.kill('SIGTERM');await Promise.race([new Promise(resolve=>child.once('exit',resolve)),sleep(12000,undefined,{ref:false}).then(()=>{child.kill('SIGKILL');throw Error('Native stop timeout');})]);redis.close();model.closeAllConnections();await new Promise(resolve=>model.close(resolve));await fs.rm(root,{recursive:true,force:true});}
+finally{await stopNative();redis.close();model.closeAllConnections();await new Promise(resolve=>model.close(resolve));await fs.rm(root,{recursive:true,force:true});}
