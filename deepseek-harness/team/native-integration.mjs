@@ -30,7 +30,8 @@ const model=createServer(async(req,res)=>{
  res.end('data: [DONE]\n\n');
 });
 await new Promise(resolve=>model.listen(0,'127.0.0.1',resolve));
-Object.assign(process.env,{CLAWMANAGER_TEAM_ENABLED:'true',CLAWMANAGER_TEAM_ID:teamId,CLAWMANAGER_TEAM_MEMBER_ID:'worker',CLAWMANAGER_TEAM_ROLE:'worker',CLAWMANAGER_TEAM_REDIS_URL:process.env.REDIS_TEAM_TEST_URL,CLAWMANAGER_TEAM_SHARED_DIR:shared,CLAWMANAGER_GATEWAY_GENERATION:'2',CLAWMANAGER_DEFAULT_PROJECT_PATH:path.join(root,'workspace'),XDG_STATE_HOME:path.join(root,'state')});
+Object.assign(process.env,{CLAWMANAGER_TEAM_ENABLED:'true',CLAWMANAGER_TEAM_ID:teamId,CLAWMANAGER_TEAM_MEMBER_ID:'worker',CLAWMANAGER_TEAM_ROLE:'worker',CLAWMANAGER_TEAM_REDIS_URL:process.env.REDIS_TEAM_TEST_URL,CLAWMANAGER_TEAM_SHARED_DIR:shared,CLAWMANAGER_GATEWAY_GENERATION:'2',XDG_STATE_HOME:path.join(root,'state')});
+delete process.env.CLAWMANAGER_DEFAULT_PROJECT_PATH;delete process.env.CLAWMANAGER_PROJECT_PATH;
 await fs.writeFile(path.join(shared,'team.json'),JSON.stringify({teamId,members:[{memberId:'leader',role:'leader',isLeader:true},{memberId:'worker',role:'worker'}]}));
 const env={...process.env,HOME:root,DSH_HOME:path.join(root,'.dsh'),NARB_DISABLE_NATIVE_CACHE:'1',CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION:'dsh-team-v1',CLAWMANAGER_LLM_API_KEY:'fixture',CLAWMANAGER_LLM_RESOLVED_CONFIG_JSON:JSON.stringify({default_provider:'clawmanager',default_model:'auto',providers:[{provider_id:'clawmanager',model_ids:['auto']}],api_key_env:'CLAWMANAGER_LLM_API_KEY',base_url:`http://127.0.0.1:${model.address().port}/v1`})};
 let child;

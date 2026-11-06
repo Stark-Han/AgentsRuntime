@@ -36,7 +36,10 @@ export default class TeamHost {
       await fs.unlink(lockFile);
       await fs.writeFile(lockFile, JSON.stringify({ pid: process.pid, start: await processStart(process.pid), nonce }), { flag: 'wx', mode: 0o600 }); locked = true;
     }
-    bridge = await createBridge({ protocol, native: host, runtimeName: 'DeepSeek Harness' });
+    // DSH inherits its trusted cwd from the gateway supervisor. Unlike OpenCode
+    // it does not require a product-specific project environment variable.
+    bridge = await createBridge({ protocol, native: host, runtimeName: 'DeepSeek Harness',
+      environment: { ...process.env, CLAWMANAGER_DEFAULT_PROJECT_PATH: process.cwd() } });
     const definitions = {
       team_send: [protocol.teamSendParameters, 'Send a real assignment or handoff using to and text. Reuse already running or accepted work.'],
       team_status: [protocol.teamStatusParameters, 'Read current accepted results and workflow facts. Task files are dispatch snapshots; do not repeat accepted work.'],
