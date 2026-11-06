@@ -63,7 +63,7 @@ try{
  await stopNative();raw='';startNative();
  await wait(async()=>{const value=await redis.command('HGET',prefix+':presence','worker');return value&&JSON.parse(value).lastSeenAt!==oldSeen;});
  await redis.command('XADD',prefix+':inbox:worker','*','payload',JSON.stringify(envelope));await sleep(800);assert.equal(calls,before);assert.equal(await fs.readFile(path.join(journalDir,journals[0]),'utf8'),journal);
- const match=raw.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_%.-]+/);assert.ok(match);
+ const match=await wait(async()=>raw.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_%.-]+/));
  const login=await fetch(match[0],{redirect:'manual'}),origin=new URL(match[0]).origin,cookie=login.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');
  const rpc=async(method,args)=>{const r=await fetch(origin+'/api/'+method,{method:'POST',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:'fixture-'+Date.now(),method,payload:{args:method==='session/list'?{_request:args}:{request:args}}})});return(await r.json()).result.value;};
  const session=(await rpc('session/list',{})).items[0];const projection=await rpc('session/projections',{sessionId:session.sessionId});
