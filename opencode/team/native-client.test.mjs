@@ -7,6 +7,13 @@ const session = nativeIdentity(identity).session;
 const owned = { data: { id: session, location: { directory: "/workspaces/member/starter" }, metadata: { "clawmanager.team": "12", "clawmanager.member": "writer" } } };
 const response = (data, status = 200) => new Response(JSON.stringify(data), { status });
 
+test("pending interaction reports only this Team session and never exports raw requests", async () => {
+ const client = new NativeClient({port:4096,password:"test",request:async url => response({data: url.endsWith('/api/form') ? [{id:"own-form",sessionID:session,metadata:{kind:"websearch.provider"},secret:"canary"},{id:"other-form",sessionID:"other"}] : [{id:"own-permission",sessionID:session,resources:["private-canary"]}]})});
+ const value=await client.pendingInteraction(identity);
+ assert.deepEqual(value,{pending:true,kinds:["permission","search_provider"],ids:["own-form","own-permission"]});
+ assert.ok(!JSON.stringify(value).includes("canary"));
+});
+
 test("transport identities survive generation recovery and distinguish corrective messages", () => {
  assert.deepEqual(nativeIdentity(identity), nativeIdentity({ ...identity, generation: 3 }));
  assert.notEqual(nativeIdentity(identity).message, nativeIdentity({ ...identity, messageId: "delivery-2" }).message);

@@ -134,6 +134,15 @@ export async function createBridge({ protocol, native, environment = process.env
        current.observed={...nativeFacts.observed,mtimeMs:changed?Date.now():(current.observed?.mtimeMs||nativeFacts.observed.mtimeMs)};
       }
       if(nativeFacts.publicText && runtime.isActiveTaskCompleted(identity.taskId))current.deliveryText=nativeFacts.publicText;
+      if (native.pendingInteraction && (current.observed?.pendingToolName || current.interactionPending) && Date.now() - (current.interactionCheckedAt || 0) >= 10000) {
+       current.interactionCheckedAt = Date.now();
+       const interaction = await native.pendingInteraction(identity, abort.signal);
+       const key = JSON.stringify(interaction);
+       if (key !== current.interactionKey && (interaction.pending || current.interactionPending)) {
+        await emitTaskEvent("task_progress", { eventKind: interaction.pending ? "runtime_waiting_authorization" : "runtime_authorization_resumed", interactionKinds: interaction.kinds, interactionPending: interaction.pending, nonAuthoritative: true, stateEffect: "none", rootTaskTerminal: false, visibleToChat: interaction.pending, summary: interaction.pending ? "OpenCode 正在等待原生授权或问题回答；原工作保留，不会重复派发。" : "OpenCode 的原生交互等待已结束，继续原工作。" });
+       }
+       current.interactionKey = key; current.interactionPending = interaction.pending;
+      }
      } else cursor = await native.readLog(identity, cursor, event => {
       if (event.type === "session.inbox.delivered") ownsInput = event.data.inboxID === ids.message;
       if (!ownsInput) return;

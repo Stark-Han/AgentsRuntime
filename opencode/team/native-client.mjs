@@ -148,6 +148,18 @@ export class NativeClient {
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
   }
 
+  async pendingInteraction(identity, signal) {
+    const { session } = nativeIdentity(identity);
+    const [permissions, forms] = await Promise.all([
+      this.api(`/api/session/${session}/permission`, { signal }),
+      this.api("/api/form", { signal }),
+    ]);
+    const own = value => Array.isArray(value?.data) ? value.data.filter(item => item.sessionID === session) : [];
+    const requests = [...own(permissions).map(item => ({ id: item.id, kind: "permission" })),
+      ...own(forms).map(item => ({ id: item.id, kind: item.metadata?.kind === "websearch.provider" ? "search_provider" : "question" }))];
+    return { pending: requests.length > 0, kinds: [...new Set(requests.map(item => item.kind))].sort(), ids: requests.map(item => String(item.id)).sort() };
+  }
+
   async admit(identity, directory, text, signal) {
     if (typeof text !== "string" || text.length > 512000) throw new Error("Invalid Team input");
     const ids = await this.ensureSession(identity, directory, signal);
