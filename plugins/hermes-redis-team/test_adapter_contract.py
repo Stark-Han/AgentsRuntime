@@ -2034,6 +2034,17 @@ class HermesRedisTeamContractTests(unittest.TestCase):
             self.assertEqual(len(monitor_events), 0, "a non-terminal Monitor must reach the model instead of being answered mechanically")
 
 class ActiveContextDeliveryTests(unittest.TestCase):
+    def test_restart_presence_does_not_inherit_old_offline_marker(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            settings=adapter.RedisTeamSettings(enabled=True,redis_url="redis://example.invalid",team_id="42",member_id="worker",role="worker",shared_dir=directory,generation=2)
+            adapter.write_local_status(settings,{"liveness":"offline","generation":1,"availability":"busy","currentTaskId":"root"})
+            status=adapter._write_online_status(settings)
+            self.assertEqual(status["liveness"],"online")
+            self.assertEqual(status["generation"],2)
+            self.assertEqual(status["availability"],"busy")
+            self.assertEqual(status["currentTaskId"],"root")
+
     def test_runtime_fault_is_classified_without_copying_provider_body(self):
         import tempfile
         from unittest import mock

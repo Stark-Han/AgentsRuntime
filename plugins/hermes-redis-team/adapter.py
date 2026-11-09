@@ -532,6 +532,12 @@ def _context_notice_path(settings: RedisTeamSettings) -> Path:
     return settings.shared_path / ".hermes-redis-team" / f"context-{_safe_name(settings.member_id)}.json"
 
 
+def _write_online_status(settings: RedisTeamSettings, patch: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    # A new connected publisher cannot inherit a previous process's offline
+    # marker. Business progress remains unchanged and is never inferred here.
+    return write_local_status(settings, {**(patch or {}), "liveness":"online", "generation":settings.generation})
+
+
 def _record_context_request(settings: RedisTeamSettings, kwargs: dict[str, Any]) -> None:
     # Observe the actual prepared request, not a Redis ACK. Retain no request
     # body, tool output or reasoning in the delivery journal.
@@ -2849,7 +2855,7 @@ class RedisTeamAdapter(BasePlatformAdapter):
             except RespError as exc:
                 if "BUSYGROUP" not in str(exc):
                     raise
-            status = write_local_status(self.settings, status_patch or {"availability": "idle"})
+            status = _write_online_status(self.settings, status_patch or {"availability": "idle"})
             await presence.command(
                 "HSET",
                 presence_key(self.settings),
@@ -3678,7 +3684,7 @@ class RedisTeamAdapter(BasePlatformAdapter):
                     await self._flush_context_notices()
                 for identity in list(self._active_assignments):
                     self._retire_terminal_assignment(identity)
-                status = write_local_status(self.settings)
+                status = _write_online_status(self.settings)
                 if self._active_assignments:
                     runtime_status = _trim(status.get("runtimeStatus")).lower()
                     availability = _trim(status.get("availability")).lower()
