@@ -2089,13 +2089,13 @@ class ActiveContextDeliveryTests(unittest.TestCase):
                 instance.set_clawmanager_team_agent_reader(lambda source:replacement)
                 await instance._flush_context_notices()
                 replacement.steer.assert_not_called()
-                for name,extra in [("old-work",{"assignmentId":"old-work"}),("old-version",{"revision":2}),("wrong-root",{"taskId":"old-root"}),("wrong-sender",{"from":"someone"})]:
+                for name,extra in [("old-work",{"assignmentId":"old-work"}),("old-version",{"revision":2}),("wrong-root",{"taskId":"old-root"})]:
                     await instance._dispatch_envelope({**envelope,"messageId":name,**extra},context_only=True)
                     self.assertEqual(adapter._read_json(adapter._context_notice_path(settings))[name]["state"],"ignored")
                 replacement.steer.assert_not_called()
                 active["terminal"]=True
                 adapter._persist_active_envelope(settings,active)
-                await instance._dispatch_envelope({**envelope,"messageId":"late"},context_only=True)
+                await instance._dispatch_envelope({**envelope,"messageId":"late","from":"clawmanager-monitor"},context_only=True)
                 replacement.steer.assert_not_called()
             asyncio.run(run())
 
@@ -2108,6 +2108,7 @@ class ActiveContextDeliveryTests(unittest.TestCase):
             active={"taskId":"root","assignmentId":"work","messageId":"original","revision":1,"from":"chief"}
             adapter._persist_active_envelope(settings,active)
             instance=adapter.RedisTeamAdapter(None); instance.settings=settings
+            instance.set_clawmanager_team_agent_reader(lambda source:object())
             instance.handle_message=mock.AsyncMock()
             notice={"taskId":"root","messageId":"notice","from":"clawmanager-monitor","text":"Report actual progress","requiresCompletion":False}
             async def run():
@@ -2119,6 +2120,32 @@ class ActiveContextDeliveryTests(unittest.TestCase):
                 await instance._flush_context_notices()
                 native.steer.assert_called_once()
                 instance.handle_message.assert_not_awaited()
+            asyncio.run(run())
+
+    def test_idle_recovery_and_peer_context_keep_the_original_dispatch(self):
+        import asyncio
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as directory:
+            settings=adapter.RedisTeamSettings(enabled=True,redis_url="redis://example.invalid",team_id="42",member_id="worker",role="worker",shared_dir=directory)
+            active={"taskId":"root","assignmentId":"work","messageId":"original","revision":1,"from":"chief"}
+            adapter._persist_active_envelope(settings,active)
+            instance=adapter.RedisTeamAdapter(None);instance.settings=settings
+            native=types.SimpleNamespace(steer=mock.Mock(return_value=True))
+            instance.handle_message=mock.AsyncMock()
+            async def run():
+                notice={"taskId":"root","messageId":"idle-recovery","from":"clawmanager-monitor","text":"Submit the existing result","requiresCompletion":False}
+                instance.set_clawmanager_team_agent_reader(lambda source:None)
+                await instance._dispatch_envelope(notice,context_only=True)
+                instance.handle_message.assert_awaited_once()
+                instance.set_clawmanager_team_agent_reader(lambda source:native)
+                await instance._dispatch_envelope({**notice,"messageId":"peer-context","from":"peer"},context_only=True)
+                self.assertEqual(instance.handle_message.await_count,2)
+                active["terminal"]=True;adapter._persist_active_envelope(settings,active)
+                await instance._dispatch_envelope({**notice,"messageId":"clarification","from":"chief"},context_only=True)
+                self.assertEqual(instance.handle_message.await_count,3)
+                native.steer.assert_not_called()
+                self.assertEqual(adapter._load_active_envelope(settings),active)
             asyncio.run(run())
 
 

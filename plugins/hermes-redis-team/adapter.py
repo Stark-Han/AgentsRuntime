@@ -4208,6 +4208,14 @@ class RedisTeamAdapter(BasePlatformAdapter):
         root, assignment = _assignment_identity(active)
         incoming_root, incoming_assignment = _assignment_identity(envelope)
         sender = _trim(envelope.get("from"))
+        system_notice = sender in {"clawmanager", "clawmanager-monitor"}
+        # Keep ordinary peer messages and long context on their original path.
+        # This is a busy-execution reminder adapter, not a replacement inbox.
+        if not sender or not (system_notice or sender == _trim(active.get("from"))):
+            return False
+        text = _trim(envelope.get("text"))
+        if not text or len(text) > 16000:
+            return False
         revision = int(active.get("revision") or 1)
         try:
             incoming_revision = int(envelope.get("revision") or revision)
@@ -4216,10 +4224,17 @@ class RedisTeamAdapter(BasePlatformAdapter):
         reason = ""
         if incoming_root != root or (incoming_assignment and incoming_assignment != assignment): reason = "stale_identity"
         elif incoming_revision != revision: reason = "stale_revision"
-        elif sender not in {_trim(active.get("from")), "clawmanager", "clawmanager-monitor"}: reason = "unconfirmed_sender"
-        elif active.get("terminal") or active.get("explicitCompletionSubmitted") or (self._redis and await _root_task_is_terminal(self._redis,self.settings,active)): reason = "work_already_delivered"
-        text = _trim(envelope.get("text"))
-        if not text or len(text)>16000: reason = reason or "unsupported_context_size"
+        elif self._redis and await _root_task_is_terminal(self._redis,self.settings,active): reason = "root_already_terminal"
+        elif active.get("terminal") or active.get("explicitCompletionSubmitted"):
+            if not system_notice:
+                return False  # legitimate Leader clarification uses normal context
+            reason = "work_already_delivered"
+        if not reason:
+            # None means native idle: the existing recovery turn must run, not
+            # be parked forever in a queue that needs that very turn to drain.
+            # A non-None initialization sentinel is busy and can wait safely.
+            if not self._team_agent_reader or self._team_agent_reader(self._context_source(active)) is None:
+                return False
         message_id = _trim(envelope.get("messageId"))
         if not message_id:
             return False
