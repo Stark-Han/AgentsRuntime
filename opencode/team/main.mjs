@@ -9,7 +9,7 @@ process.umask(0o002);
 const native = new NativeClient({ port: Number(process.env.CLAWMANAGER_GATEWAY_PORT || process.env.PORT), password: process.env.OPENCODE_SERVER_PASSWORD, username: process.env.OPENCODE_SERVER_USERNAME });
 const bridge = await createBridge({ protocol, native });
 const child = spawn("/usr/local/bin/opencode", ["serve", ...process.argv.slice(2)], {
- stdio: "inherit", env: { ...process.env, CLAWMANAGER_TEAM_BRIDGE_PORT: String(bridge.port), CLAWMANAGER_TEAM_BRIDGE_TOKEN: bridge.token },
+ stdio: "inherit", env: { ...process.env, CLAWMANAGER_TEAM_BRIDGE_PORT: String(bridge.port), CLAWMANAGER_TEAM_BRIDGE_TOKEN: bridge.token, CLAWMANAGER_TEAM_CONTEXT_KEY: bridge.contextKey },
 });
 let exiting = false;
 async function shutdown(signal) {

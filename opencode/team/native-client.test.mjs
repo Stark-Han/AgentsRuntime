@@ -7,6 +7,18 @@ const session = nativeIdentity(identity).session;
 const owned = { data: { id: session, location: { directory: "/workspaces/member/starter" }, metadata: { "clawmanager.team": "12", "clawmanager.member": "writer" } } };
 const response = (data, status = 200) => new Response(JSON.stringify(data), { status });
 
+test("steering keeps the original input identity and signs only this Team context",async()=>{
+ const sent=[];
+ const client=new NativeClient({port:4096,password:"fixture",request:async(url,options)=>{if(url.endsWith('/active'))return response({data:{[session]:true}});sent.push(JSON.parse(options.body));return response({})}});
+ client.contextKey='a'.repeat(64);
+ await client.steer(identity,'Current task reminder','notice');
+ const body=sent[0],context={type:'user',id:body.id,metadata:body.metadata};
+ assert.equal(body.delivery,'steer');assert(client.isOwnedContext(context,nativeIdentity(identity)));
+ assert(!client.isOwnedContext(context,nativeIdentity({...identity,memberId:'other'})));
+ assert(!client.isOwnedContext({...context,metadata:{...body.metadata,'clawmanager.contextFor':'unrelated'}},nativeIdentity(identity)));
+ assert.notEqual(body.id,nativeIdentity(identity).message);
+});
+
 test("pending interaction reports only this Team session and never exports raw requests", async () => {
  const client = new NativeClient({port:4096,password:"test",request:async url => response({data: url.endsWith('/api/form') ? [{id:"own-form",sessionID:session,metadata:{kind:"websearch.provider"},secret:"canary"},{id:"other-form",sessionID:"other"}] : [{id:"own-permission",sessionID:session,resources:["private-canary"]}]})});
  const value=await client.pendingInteraction(identity);

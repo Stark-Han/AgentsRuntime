@@ -125,6 +125,23 @@ export class DshHost {
     if (!current || current.id !== sessionIdentity(identity)) throw Error('DSH observation identity mismatch');
     return turnFacts((await this.events(current.id)).events, current.ids.message);
   }
+  async steer(identity, text, noticeID) {
+    const current=this.current;
+    if(!current || current.id!==sessionIdentity(identity) || current.ids.message!==nativeIdentity(identity).message || current.agent?.status!=='running')return;
+    const id='cm-context-'+hash([current.ids.message,noticeID]);
+    const prior=(await this.events(current.id)).events.find(e=>e.type==='user/message'&&e.data.id===id);
+    if(!prior && ![...(current.agent.inbox?.nextStep||[])].some(m=>m.id===id)) {
+      current.agent.steer(this.freezeMessage({id,role:'user',content:[{type:'text',text}],source:{kind:'runtime-context',origin:'clawmanager-team-control',inputId:current.ids.message,contextMessageId:noticeID,teamId:identity.teamId,memberId:identity.memberId,generation:identity.generation}}));
+      if(!await this.ctx.sessions.flush(current.agent.session))throw Error('DSH context checkpoint unavailable');
+    }
+    return {state:'submitted',nativeSessionId:current.id,nativeMessageId:id};
+  }
+  async observeContext(record, identity) {
+    if(!this.current || this.current.id!==sessionIdentity(identity))return;
+    const expected=record.nativeMessageId||'cm-context-'+hash([this.current.ids.message,record.envelope.messageId]);
+    const consumed=(await this.events(this.current.id)).events.some(e=>e.type==='user/message'&&e.data.id===expected&&e.data.source?.origin==='clawmanager-team-control');
+    if(consumed)return {state:'native_context_consumed',nativeSessionId:this.current.id,nativeMessageId:record.nativeMessageId};
+  }
   async api(resource) {
     const current = this.current;
     if (resource === '/api/session/active') return { data: current?.agent?.status === 'running' ? { [current.ids.session]: true } : {} };

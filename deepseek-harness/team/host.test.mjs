@@ -7,6 +7,16 @@ import { DshHost, sessionIdentity, turnFacts } from './host.mjs';
 import { nativeIdentity } from '../../opencode/team/native-client.mjs';
 
 const identity = { teamId:'1',memberId:'worker',taskId:'team-1-task-2',messageId:'in-1',generation:3 };
+test('busy steering enters the owned native next-step queue without another agent',async()=>{
+ const messages=[],events=[];
+ const host=new DshHost({ctx:{sessions:{flush:async()=>true},sessionQuery:{observeSession:async()=>({events,[Symbol.dispose](){}})}},directory:'/unused',freezeMessage:x=>x,installModelSelection(){}});
+ host.current={identity,ids:nativeIdentity(identity),id:sessionIdentity(identity),agent:{status:'running',session:{},inbox:{nextStep:messages},steer:m=>messages.push(m)}};
+ const value=await host.steer(identity,'reminder','notice');await host.steer(identity,'reminder','notice');
+ assert.equal(messages.length,1);assert.equal(messages[0].source.kind,'runtime-context');
+ events.push({type:'user/message',data:messages[0]});
+ assert.equal((await host.observeContext({nativeMessageId:value.nativeMessageId},identity)).state,'native_context_consumed');
+ host.current.agent.status='idle';assert.equal(await host.steer(identity,'late','other'),undefined);
+});
 test('DSH input is stable, response loss does not duplicate, and generations/tools are fenced', async () => {
  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-host-'));let calls=0,flushFailure=false;
  const sessions=new Map(),agents=new Map();

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 export class NativeRequestError extends Error {
   constructor(status) { super(`OpenCode native request failed (${status})`); this.status = status; }
@@ -85,7 +85,10 @@ export class NativeClient {
       for(const message of result.data){
         if(seen.has(message.id))throw Error("Repeated native message cursor");
         seen.add(message.id);
-        if(message.type==="user")return facts; // never cross another admitted input
+        if(message.type==="user") {
+          if(this.isOwnedContext(message, ids))continue;
+          return facts; // never cross another admitted business input
+        }
         const at=Number(message.time?.completed || message.time?.streamed || message.time?.created || 0);
         if(at)Object.assign(facts.observed,{mtimeMs:at,lastSessionEventAt:new Date(at).toISOString(),sessionCursor:message.id});
         if(message.type==="idle") { facts.failed=message.outcome!=="succeeded";facts.outcome=message.outcome;return facts; }
@@ -169,6 +172,31 @@ export class NativeClient {
       metadata: { "clawmanager.team": identity.teamId, "clawmanager.member": identity.memberId, "clawmanager.task": identity.taskId, "clawmanager.message": identity.messageId },
     } });
     return ids;
+  }
+
+  isOwnedContext(message, ids) {
+    const meta=message?.metadata, parent=meta?.["clawmanager.contextFor"], notice=meta?.["clawmanager.contextMessageId"];
+    if(!this.contextKey || message?.type!=="user" || parent!==ids.message || typeof notice!=="string" || !notice)return false;
+    const signature=createHmac("sha256",this.contextKey).update(JSON.stringify([ids.session,message.id,parent,Number(meta["clawmanager.contextGeneration"]),notice])).digest("hex");
+    return meta["clawmanager.contextSignature"]===signature;
+  }
+
+  async steer(identity, text, noticeID, signal) {
+    const ids=nativeIdentity(identity);
+    const state=await this.api("/api/session/active",{signal});
+    if(!state?.data?.[ids.session])return;
+    const notice=nativeIdentity({...identity,messageId:"context:"+noticeID});
+    const signature=createHmac("sha256",this.contextKey).update(JSON.stringify([ids.session,notice.message,ids.message,identity.generation,noticeID])).digest("hex");
+    await this.api(`/api/session/${ids.session}/prompt`,{signal,body:{id:notice.message,text,delivery:"steer",metadata:{"clawmanager.team":identity.teamId,"clawmanager.member":identity.memberId,"clawmanager.contextFor":ids.message,"clawmanager.contextMessageId":noticeID,"clawmanager.contextGeneration":identity.generation,"clawmanager.contextSignature":signature}}});
+    return {state:"submitted",nativeSessionId:ids.session,nativeMessageId:notice.message};
+  }
+
+  async observeContext(record, identity) {
+    const ids=nativeIdentity(identity),notice=nativeIdentity({...identity,messageId:"context:"+record.envelope.messageId});
+    try {
+      const input=(await this.api(`/api/session/${ids.session}/message/${notice.message}`)).data;
+      if(this.isOwnedContext(input,ids))return {state:"native_context_consumed",nativeSessionId:ids.session,nativeMessageId:notice.message};
+    }catch(error){if(!(error instanceof NativeRequestError)||error.status!==404)throw error;}
   }
 
   async interrupt(identity, signal) {

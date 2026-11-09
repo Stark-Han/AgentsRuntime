@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import { deliveryOutbox } from "./delivery-outbox.mjs";
 import { createServer } from "node:http";
 import { timingSafeEqual, randomBytes, createHash } from "node:crypto";
@@ -28,7 +29,14 @@ export async function createBridge({ protocol, native, environment = process.env
  const managedPro = environment.CLAWMANAGER_AGENT_ENABLED === "true" && /^[1-9][0-9]*$/.test(environment.INSTANCE_ID || "");
  if (!cfg.enabled || !cfg.teamId || !cfg.memberId || !Number.isSafeInteger(generation) || generation < 0 || generation === 0 && !managedPro) throw new Error(`${runtimeName} Team identity unavailable`);
  const token = randomBytes(32).toString("hex");
- let active = null, stopped = false, nativeGone = false, consumer, controlTimer, controlBusy = false;
+ let contextKey=randomBytes(32).toString("hex");
+ if(protocol.runtimeStateDir){
+  const directory=protocol.runtimeStateDir(cfg),file=path.join(directory,`native-context-${generation}.key`);
+  await fs.mkdir(directory,{recursive:true,mode:0o700});
+  try{await fs.writeFile(file,contextKey,{flag:"wx",mode:0o600})}catch(error){if(error.code!=="EEXIST")throw error;contextKey=(await fs.readFile(file,"utf8")).trim();if(!/^[a-f0-9]{64}$/.test(contextKey))throw Error("Team context key is invalid")}
+ }
+ native.contextKey=contextKey;
+ let active = null, stopped = false, nativeGone = false, consumer, contextWatcher, controlTimer, controlBusy = false;
  const publishDelivery = async(envelope,payload) => {
   const redis=new protocol.RedisClient(cfg.redisUrl);
   try {await redis.connect();await protocol.xaddJson(redis,protocol.eventsKey(cfg),protocol.taskEvent(cfg,"reply",envelope,payload));}finally{redis.close();}
@@ -46,12 +54,17 @@ export async function createBridge({ protocol, native, environment = process.env
  const server = createServer(async (request, response) => {
   const reply = (status, value) => { response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }); response.end(JSON.stringify(value)); };
   if (!equal(request.headers.authorization, `Bearer ${token}`)) return reply(403, { error: "Team tool authorization failed" });
-  if (request.method !== "POST" || request.url !== "/tool") return reply(404, { error: "Unknown Team operation" });
+  if (request.method !== "POST" || !["/tool","/context-included"].includes(request.url)) return reply(404, { error: "Unknown Team operation" });
   try {
    let size = 0; const chunks = [];
    for await (const chunk of request) { size += chunk.length; if (size > 1024 * 1024) { reply(413, { error: "Team tool request too large" }); return; } chunks.push(chunk); }
    const input = JSON.parse(Buffer.concat(chunks));
    const current = active;
+   if(request.url==="/context-included"){
+    if(!current || stopped || input.sessionID!==current.ids.session || input.taskID!==current.ids.message || input.generation!==generation || typeof input.contextMessageId!=="string")return reply(409,{error:"Team context identity is not active"});
+    const included=await contextWatcher?.confirm(input.contextMessageId,{nativeSessionId:input.sessionID,nativeMessageId:input.nativeMessageId});
+    return reply(200,{ok:!!included});
+   }
    if (!current || current.interrupted || stopped || input.sessionID !== current.ids.session || input.taskID !== current.ids.message || input.generation !== generation || !methods[input.name]) return reply(409, { error: "Team execution identity is not active" });
    if (!input.arguments || typeof input.arguments !== "object" || Array.isArray(input.arguments)) return reply(422, { error: "Invalid Team tool arguments" });
    if (typeof input.callID !== "string" || !input.callID || input.callID.length > 512) return reply(422, { error: "Missing native tool call identity" });
@@ -96,7 +109,7 @@ export async function createBridge({ protocol, native, environment = process.env
   const identity = { teamId: String(cfg.teamId), memberId: cfg.memberId, taskId: String(envelope.rootTaskId || envelope.taskId || ""), messageId: String(envelope.messageId || ""), generation };
   const ids = nativeIdentity(identity);
   if (active) throw new Error(`${runtimeName} member already owns an execution`);
-  const current = { identity, ids, interrupted: false, calls: new Map() };
+  const current = { identity, ids, envelope, interrupted: false, calls: new Map() };
   active = current;
   const startedAt = Date.now();
   let activity, stopHeartbeat = () => {};
@@ -234,7 +247,7 @@ export async function createBridge({ protocol, native, environment = process.env
   }
  }
  return {
-  port: server.address().port, token,
+  port: server.address().port, token, contextKey,
   async start() {
    const reportFailure = async (envelope,error,stoppedEvidence=false) => {
     log.error(`${runtimeName} Team delivery failed; original work remains available for recovery`);
@@ -248,6 +261,11 @@ export async function createBridge({ protocol, native, environment = process.env
    };
    await deliveries?.flush().catch(()=>log.warn?.(`${runtimeName} public delivery remains pending`));
    consumer = await protocol.startConsumer(cfg, consume, reportFailure, log);
+   if(protocol.startActiveContextWatcher && typeof native.steer==="function")contextWatcher=await protocol.startActiveContextWatcher(cfg,{
+    getActive:()=>!stopped && active && !active.interrupted && !runtime.isActiveTaskCompleted(active.identity.taskId)?{envelope:active.envelope,generation,identity:active.identity}:null,
+    deliver:(notice,text,current)=>native.steer(current.identity,text,notice.messageId,abort.signal),
+    observe:(record,current)=>native.observeContext?.(record,current.identity),
+   },log);
    // This control probe never runs a model. A failed HTTP read cannot leave
    // the member's identity pinned forever after its process actually exited.
    controlTimer=setInterval(async()=>{
@@ -275,6 +293,7 @@ export async function createBridge({ protocol, native, environment = process.env
    stopped = true;
    clearInterval(controlTimer);
    closeInFlight = (async () => {
+    await contextWatcher?.stop();
     // Stop admission first. The accepted native execution is then interrupted
     // and joined; untouched inbox entries remain pending for the next process.
     await consumer?.stop({ waitForExecution: false });
