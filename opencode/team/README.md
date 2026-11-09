@@ -38,6 +38,13 @@ completion is reported through the existing turn-outcome recovery protocol.
 Worker delivery cannot close the Leader root. Shared files use the existing
 member/task scope and preview service, including owner authorization.
 
+For an owned, currently governed Team session, first-use web search selects
+the configured Team provider (`CLAWMANAGER_TEAM_WEBSEARCH_PROVIDER`, default
+`exa`) without a UI Form. Native permissions and explicit search disable still
+apply; ordinary sessions retain consent, and the global provider selection is
+not changed. Pending native permissions/forms are reported as interaction
+waits without replaying execution or exporting request contents.
+
 Targeted checks:
 
 ```sh
