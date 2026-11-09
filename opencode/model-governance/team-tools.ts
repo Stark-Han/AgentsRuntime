@@ -4,6 +4,27 @@ import { ToolFailure } from "@opencode/ai"
 import { Effect, Schema } from "effect"
 import { Governance } from "./clawmanager-governance.js"
 import { Permission } from "./permission.js"
+import { WebSearch } from "./websearch.js"
+import { SessionSchema } from "./session/schema.js"
+
+// Only the bridge-owned Team session gets a non-interactive default. Ordinary
+// sessions retain native consent; native permission checks and explicit search
+// configuration/disable still run before this ProviderRequired fallback.
+export const searchProvider = Effect.fn("ClawManagerTeamTools.searchProvider")(function* (sessionID: SessionSchema.ID, sessionInfo: Effect.Effect<SessionSchema.Info | undefined, unknown>, websearch: WebSearch.Interface) {
+ if (process.env.CLAWMANAGER_TEAM_ENABLED !== "true") return undefined
+ const team = process.env.CLAWMANAGER_TEAM_ID
+ const member = process.env.CLAWMANAGER_TEAM_MEMBER_ID
+ if (!team || !member) return undefined
+ const session = yield* sessionInfo
+ if (session?.parentID || session?.metadata?.["clawmanager.team"] !== team || session.metadata["clawmanager.member"] !== member) return undefined
+ const headers = yield* Governance.headers
+ if (headers["X-ClawManager-Session-ID"] !== sessionID || !headers["X-ClawManager-Task-ID"]) return undefined
+ const provider = process.env.CLAWMANAGER_TEAM_WEBSEARCH_PROVIDER || "exa"
+ const available = yield* websearch.providers()
+ if (!available.some(item => item.id === provider))
+  return yield* Effect.fail(new ToolFailure({ message: "The configured Team search service is unavailable. No interactive approval or search was started." }))
+ return provider as typeof available[number]["id"]
+})
 
 const optionalFields = {
  status: Schema.optional(Schema.String), summary: Schema.optional(Schema.String),

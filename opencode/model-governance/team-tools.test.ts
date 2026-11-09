@@ -26,7 +26,33 @@ const { PluginHost } = await import("@opencode/core/plugin/host")
 const { Tool } = await import("@opencode/core/tool")
 const { Session } = await import("@opencode/schema/session")
 const { SessionMessage } = await import("@opencode/schema/session-message")
+const { WebSearch } = await import("../src/websearch.js")
 const { PluginTestLayer } = await import("./plugin/fixture")
+
+test("search default is scoped to the current owned Team execution, without changing native permissions or stored selection", async () => {
+ const memberBefore = process.env.CLAWMANAGER_TEAM_MEMBER_ID
+ const providerBefore = process.env.CLAWMANAGER_TEAM_WEBSEARCH_PROVIDER
+ process.env.CLAWMANAGER_TEAM_MEMBER_ID = "worker"
+ const sessionID = Session.ID.make("ses_team_search")
+ let metadata = { "clawmanager.team": "12", "clawmanager.member": "worker" }
+ const run = () => Effect.runPromise(Governance.withPrimary(sessionID, "clawmanager", [{ type: "user", id: "msg_search" }], ClawManagerTeamTools.searchProvider(sessionID,
+  Effect.succeed({ id: sessionID, metadata } as unknown as import("@opencode/schema/session").Session.Info),
+  { providers: () => Effect.succeed([{ id: WebSearch.ID.make("exa"), name: "Exa" }]) } as unknown as import("../src/websearch.js").Interface,
+ )))
+ try {
+  expect(String(await run())).toBe("exa")
+  metadata = { "clawmanager.team": "other", "clawmanager.member": "worker" }
+  expect(await run()).toBeUndefined()
+  metadata = { "clawmanager.team": "12", "clawmanager.member": "other" }
+  expect(await run()).toBeUndefined()
+  metadata = { "clawmanager.team": "12", "clawmanager.member": "worker" }
+  process.env.CLAWMANAGER_TEAM_WEBSEARCH_PROVIDER = "not-installed"
+  await expect(run()).rejects.toThrow("configured Team search service is unavailable")
+ } finally {
+  if (memberBefore === undefined) delete process.env.CLAWMANAGER_TEAM_MEMBER_ID; else process.env.CLAWMANAGER_TEAM_MEMBER_ID = memberBefore
+  if (providerBefore === undefined) delete process.env.CLAWMANAGER_TEAM_WEBSEARCH_PROVIDER; else process.env.CLAWMANAGER_TEAM_WEBSEARCH_PROVIDER = providerBefore
+ }
+})
 afterAll(() => { server.stop(true); for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value } })
 
 test("native Team tools inherit task identity and preserve existing optional workflow fields", async () => {

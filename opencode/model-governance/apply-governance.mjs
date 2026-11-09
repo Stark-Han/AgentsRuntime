@@ -65,6 +65,12 @@ function patch(relative, edits) {
 
 // Validate every file before any mutation. No changes to SQLite schema or UI.
 const files = [
+  patch("tool/plugin/websearch.ts", [
+    ['import { WebSearch }', 'import { ClawManagerTeamTools } from "../../clawmanager-team-tools.js"\nimport { WebSearch }'],
+    ['Effect.catchTag("WebSearch.ProviderRequired", () => {', 'Effect.catchTag("WebSearch.ProviderRequired", () => Effect.gen(function* () {'],
+    ['                  return providerSelectionLock', '                  const teamProvider = yield* ClawManagerTeamTools.searchProvider(context.sessionID, ctx.session.get({ sessionID: context.sessionID }), websearch)\n                  if (teamProvider) return yield* search(teamProvider)\n                  return yield* providerSelectionLock'],
+    ['                      Effect.flatMap(search),\n                    )\n                }),', '                      Effect.flatMap(search),\n                    )\n                })),'],
+  ]),
   patch("plugin/internal.ts", [
     ['import { WebSearchTool }', 'import { ClawManagerImageTools } from "../clawmanager-image-tools.js"\nimport { ClawManagerTeamTools } from "../clawmanager-team-tools.js"\nimport { WebSearchTool }'],
     ['  WebSearchTool.Plugin,', '  WebSearchTool.Plugin,\n  ClawManagerImageTools.Plugin,\n  ClawManagerTeamTools.Plugin,'],
