@@ -11,7 +11,8 @@ import * as protocol from '/opt/clawmanager-dsh/adapter/deepseek-harness/team/pr
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'dsh-team-native-')),shared=path.join(root,'shared');
 await fs.mkdir(shared);await fs.mkdir(path.join(root,'workspace'));
 await fs.writeFile(path.join(root,'workspace','AGENTS.md'),'Use the registered Team tools for the assignment. Preserve public results.\n');
-const teamId=String(Date.now());let calls=0,raw='';
+const teamId=String(Date.now());let calls=0,raw='',activeModelRequest=false,contextIncluded=false;
+const contextFixture=process.env.TEAM_CONTEXT_FIXTURE==='1';
 const model=createServer(async(req,res)=>{
  const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));
  assert.equal(req.headers.authorization,'Bearer fixture');calls++;
@@ -19,6 +20,10 @@ const model=createServer(async(req,res)=>{
  if(tools.length){
   const complete=tools.find(t=>t.function.name==='team_complete_task')?.function.parameters;
   assert.deepEqual(complete?.required,['status','summary']);assert.ok(complete.properties.resultMarkdown&&complete.properties.validationTargetAssignmentId&&complete.properties.artifactRefs);
+ }
+ if(contextFixture && tools.length){
+  if(!activeModelRequest){activeModelRequest=true;await sleep(8500);}
+  if(JSON.stringify(body.messages).includes('Native reminder fixture marker'))contextIncluded=true;
  }
  const results=body.messages.filter(m=>m.role==='tool');
  let delta;
@@ -47,6 +52,10 @@ try{
  await wait(async()=>await redis.command('HGET',prefix+':presence','worker'));
  const envelope={v:4,protocolVersion:4,teamId,taskId:`team-${teamId}-task-1`,rootTaskId:`team-${teamId}-task-1`,messageId:'dsh-native-1',idempotencyKey:'dsh-native-1',assignmentId:'write',workId:'write',revision:1,from:'leader',to:'worker',type:'assignment',text:'Write report.md and formally submit. Then give the public final answer.',createdAt:new Date().toISOString()};
  await redis.command('XADD',prefix+':inbox:worker','*','payload',JSON.stringify(envelope));
+ if(contextFixture){
+  await wait(()=>activeModelRequest);
+  await redis.command('XADD',prefix+':inbox:worker','*','payload',JSON.stringify({...envelope,messageId:'native-context-1',idempotencyKey:'native-context-1',from:'clawmanager-monitor',businessDeliveryKind:'context',businessMutation:false,requiresCompletion:false,text:'Native reminder fixture marker. Continue this original assignment without restarting.'}));
+ }
  // Controlled acknowledgement stands in for CM only in this isolated contract
  // fixture. Final release acceptance below uses the real CM completion gate.
  let acknowledged=false;
@@ -55,6 +64,7 @@ try{
   if(proposal&&!acknowledged){assert.notEqual(proposal.rootTaskTerminal,true);await redis.command('SET',prefix+':completion-ack:'+proposal.completionId+':'+proposal.attemptId,JSON.stringify({decision:'accepted'}));acknowledged=true;}
   return v.some(x=>x.eventKind==='delivery_supplement')&&v;});
  assert.equal(events.filter(x=>x.event==='completion_proposed').length,1);
+ if(contextFixture){assert.ok(contextIncluded,'Reminder must reach an actual native model request');assert.ok(events.some(x=>x.eventKind==='runtime_context_delivery'),'Context receipt required');}
  assert.ok(events.some(x=>x.eventKind==='delivery_supplement'&&x.text==='DSH native public final answer'));
  assert.match(await fs.readFile(path.join(shared,`artifacts/${envelope.taskId}/members/worker/write/report.md`),'utf8'),/Actual artifact/);
  const before=calls;await redis.command('XADD',prefix+':inbox:worker','*','payload',JSON.stringify(envelope));await sleep(800);assert.equal(calls,before);
@@ -69,7 +79,7 @@ try{
  const session=(await rpc('session/list',{})).items[0];const projection=await rpc('session/projections',{sessionId:session.sessionId});
  const page=await rpc('session/page',{address:{kind:'session',sessionId:session.sessionId},throughSeq:projection.asOfSeq});
  assert.ok(page.records.some(x=>x.event?.type==='user/message'&&x.event.data.source?.kind==='agent-instructions'),'the real native AGENTS.md context must be exercised');
- console.log(JSON.stringify({native:'0.2.1-rc.3',presence:true,full_tool_schema:true,minimal_receipt:true,artifact:true,public_supplement:true,native_agent_instructions:true,duplicate_model_execution:false,process_restart_retains_input:true,confirmed_stop:true}));
+ console.log(JSON.stringify({native:'0.2.1-rc.3',presence:true,full_tool_schema:true,minimal_receipt:true,active_context_request:contextFixture?contextIncluded:undefined,artifact:true,public_supplement:true,native_agent_instructions:true,duplicate_model_execution:false,process_restart_retains_input:true,confirmed_stop:true}));
 }catch(e){
  console.error('fixture model calls:',calls);
  const match=raw.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_%.-]+/);
@@ -77,7 +87,7 @@ try{
   const login=await fetch(match[0],{redirect:'manual'});const origin=new URL(match[0]).origin,cookie=login.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ');
   const rpc=async(method,args)=>{const r=await fetch(origin+'/api/'+method,{method:'POST',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:'diagnostic-'+Date.now(),method,payload:{args:method==='session/list'?{_request:args}:{request:args}}})});return(await r.json()).result;};
   const sessions=await rpc('session/list',{});console.error('native sessions:',JSON.stringify(sessions));
-  for(const session of sessions.value?.items||[]){const projection=await rpc('session/projections',{sessionId:session.sessionId});const page=await rpc('session/page',{address:{kind:'session',sessionId:session.sessionId},throughSeq:projection.value.asOfSeq});console.error('native event facts:',JSON.stringify(page.value?.records.map(x=>({type:x.event?.type,reason:x.event?.data?.reason,error:x.event?.data?.error}))))}
+  for(const session of sessions.value?.items||[]){const projection=await rpc('session/projections',{sessionId:session.sessionId});const page=await rpc('session/page',{address:{kind:'session',sessionId:session.sessionId},throughSeq:projection.value.asOfSeq});console.error('native event facts:',JSON.stringify(page.value?.records.map(x=>({type:x.event?.type,reason:x.event?.data?.reason,error:x.event?.data?.error,context:x.event?.type==='agent/inbox/spliced'?x.event.data.inserted?.map(m=>({source:m.source,id:m.id,content:m.content})):undefined}))))}
  }catch{}
  console.error(raw.replace(/\?token=\S+/g,'?token=[redacted]').slice(-10000));throw e;
 }

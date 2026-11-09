@@ -12,7 +12,7 @@ test('busy steering enters the owned native next-step queue without another agen
  const host=new DshHost({ctx:{sessions:{flush:async()=>true},sessionQuery:{observeSession:async()=>({events,[Symbol.dispose](){}})}},directory:'/unused',freezeMessage:x=>x,installModelSelection(){}});
  host.current={identity,ids:nativeIdentity(identity),id:sessionIdentity(identity),agent:{status:'running',session:{},inbox:{nextStep:messages},steer:m=>messages.push(m)}};
  const value=await host.steer(identity,'reminder','notice');await host.steer(identity,'reminder','notice');
- assert.equal(messages.length,1);assert.equal(messages[0].source.kind,'runtime-context');
+ assert.equal(messages.length,1);assert.equal(messages[0].source.kind,'clawmanager-team-context');
  events.push({type:'user/message',data:messages[0]});
  assert.equal((await host.observeContext({nativeMessageId:value.nativeMessageId},identity)).state,'native_context_consumed');
  host.current.agent.status='idle';assert.equal(await host.steer(identity,'late','other'),undefined);

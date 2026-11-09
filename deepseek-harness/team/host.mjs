@@ -6,7 +6,7 @@ import { nativeIdentity } from '../../opencode/team/native-client.mjs';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 // Native-generated context augments the current input; it is not another
 // user/Team delivery. Keep this allowlist narrow: unknown sources retire tools.
-const nativeContext = source => ['runtime-context', 'time-context', 'agent-instructions'].includes(source?.kind);
+const nativeContext = source => (['runtime-context', 'time-context', 'agent-instructions'].includes(source?.kind) || (source?.kind === 'clawmanager-team-context' && source?.origin === 'clawmanager-team-control'));
 export function sessionIdentity(identity) {
   const h = hash([identity.teamId, identity.memberId, identity.taskId, identity.messageId]);
   return `session-${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20,32)}`;
@@ -131,7 +131,9 @@ export class DshHost {
     const id='cm-context-'+hash([current.ids.message,noticeID]);
     const prior=(await this.events(current.id)).events.find(e=>e.type==='user/message'&&e.data.id===id);
     if(!prior && ![...(current.agent.inbox?.nextStep||[])].some(m=>m.id===id)) {
-      current.agent.steer(this.freezeMessage({id,role:'user',content:[{type:'text',text}],source:{kind:'runtime-context',origin:'clawmanager-team-control',inputId:current.ids.message,contextMessageId:noticeID,teamId:identity.teamId,memberId:identity.memberId,generation:identity.generation}}));
+      // Native reserves runtime-context for its own generated snapshot and discards
+      // caller text with that kind. Keep our signed/owned context distinct.
+      current.agent.steer(this.freezeMessage({id,role:'user',content:[{type:'text',text}],source:{kind:'clawmanager-team-context',origin:'clawmanager-team-control',inputId:current.ids.message,contextMessageId:noticeID,teamId:identity.teamId,memberId:identity.memberId,generation:identity.generation}}));
       if(!await this.ctx.sessions.flush(current.agent.session))throw Error('DSH context checkpoint unavailable');
     }
     return {state:'submitted',nativeSessionId:current.id,nativeMessageId:id};
@@ -140,7 +142,7 @@ export class DshHost {
     if(!this.current || this.current.id!==sessionIdentity(identity))return;
     const expected=record.nativeMessageId||'cm-context-'+hash([this.current.ids.message,record.envelope.messageId]);
     const consumed=(await this.events(this.current.id)).events.some(e=>e.type==='user/message'&&e.data.id===expected&&e.data.source?.origin==='clawmanager-team-control');
-    if(consumed)return {state:'native_context_consumed',nativeSessionId:this.current.id,nativeMessageId:record.nativeMessageId};
+    if(consumed)return {state:'native_context_consumed',nativeSessionId:this.current.id,nativeMessageId:expected};
   }
   async api(resource) {
     const current = this.current;
