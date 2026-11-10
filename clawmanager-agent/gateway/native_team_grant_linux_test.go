@@ -21,6 +21,12 @@ func TestNativeTeamGrantNamespaceChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{WorkspaceRoot: op.Config.WorkspaceRoot, SandboxProfile: "nfs-rootless-v1", NativeTeamGrant: op.Config.TeamGrant}
+	if os.Getenv("CM_TEAM_GRANT_CONFIG_ONLY") == "1" {
+		if err := WriteLiteTeamConfigJSONForConfig(cfg, op.Request, op.Request.WorkspacePath); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if err := PrepareLiteTeamSharedWorkspaceForConfig(cfg, op.Request, op.Request.WorkspacePath, filepath.Join(op.Request.WorkspacePath, "home")); err != nil {
 		t.Fatal(err)
 	}

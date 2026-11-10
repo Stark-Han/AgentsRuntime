@@ -69,6 +69,15 @@ func TestOperatorLegacyCredentialCopies(t *testing.T) {
 		if err := (Profile{}).MigrateManagedCredentials(context.Background(), cfg, req, workspace); err != nil {
 			t.Fatalf("copied generated data rejected: %s", gateway.NativeStorageFailureCode(err))
 		}
+		if os.Getenv("CM_HERMES_AUDIT_CONFIG") == "1" {
+			t.Setenv(desktopWebFlag, "true")
+			cfg.PublicOrigin = "https://portal.example.test"
+			cfg.TrustedProxies = []string{"10.0.0.1"}
+			req.UID, req.GID = os.Geteuid(), os.Getegid()
+			if err := WriteGatewayConfig(cfg, req, workspace); err != nil {
+				t.Fatalf("copied config writer rejected: %v", err)
+			}
+		}
 	}
 	t.Run("combined", func(t *testing.T) { run(t, files) })
 	for _, f := range files {
