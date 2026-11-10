@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/iamlovingit/clawmanager-agent/gateway"
@@ -37,7 +39,11 @@ func (s sandboxStarter) StartGateway(_ context.Context, spec gateway.GatewayStar
 	if err = configureSandboxProcess(cmd, spec.UID, spec.GID, groups); err != nil {
 		return gateway.ManagedProcess{}, err
 	}
-	tracker, err := sandbox.Track(cmd)
+	track := sandbox.Track
+	if s.cfg.SandboxProfile == "nfs-rootless-v1" {
+		track = sandbox.TrackContainer
+	}
+	tracker, err := track(cmd)
 	if err != nil {
 		return gateway.ManagedProcess{}, err
 	}
@@ -57,14 +63,22 @@ func (s sandboxStarter) StartGateway(_ context.Context, spec gateway.GatewayStar
 		tracker.Close()
 		return gateway.ManagedProcess{}, err
 	}
+	kill := func() error {
+		if s.cfg.SandboxProfile == "nfs-rootless-v1" {
+			return sandbox.SignalProcess(cmd.Process, uint32(spec.UID), syscall.SIGKILL)
+		}
+		return cmd.Process.Kill()
+	}
+	policy := &sandboxStopPolicy{}
 	stopNetworkFailure := func() bool { return true }
 	if execution != nil {
-		stopNetworkFailure = context.AfterFunc(execution.ctx, func() { _ = cmd.Process.Kill() })
+		stopNetworkFailure = context.AfterFunc(execution.ctx, func() { policy.networkFailure(func() { _ = kill() }) })
 	}
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
 	startErr := tracker.Started(startupCtx)
 	cancelStartup()
 	if startErr != nil {
+		log.Printf("runtime-agent sandbox startup identity failed: %v", startErr)
 		tracker.Close()
 	}
 	done := make(chan error, 1)
@@ -78,56 +92,87 @@ func (s sandboxStarter) StartGateway(_ context.Context, spec gateway.GatewayStar
 		}
 		return tracker.Close()
 	}
-	process := gateway.ManagedProcess{PID: cmd.Process.Pid, Done: done, VerifyListeners: func(ctx context.Context) error {
-		block := s.cfg.GatewayPortBlockSize
-		if block < 1 {
-			block = 1
-		}
-		return tracker.VerifyListeners(ctx, spec.Port, block)
-	}, Stop: func(ctx context.Context) error {
-		mu.Lock()
-		defer mu.Unlock()
-		select {
-		case <-waited:
-			return confirmedStop(ctx)
-		default:
-		}
-		timeout := s.cfg.ProcessStopTimeout
-		if timeout <= 0 {
-			timeout = 20 * time.Second
-		}
-		// Signal the pinned primary gateway so its application shutdown hooks
-		// can flush data. Killing the monitor first tears down its namespace.
-		signalCtx, cancelSignal := context.WithTimeout(ctx, 2*time.Second)
-		signalErr := tracker.Terminate(signalCtx)
-		cancelSignal()
-		if signalErr != nil && !errors.Is(signalErr, os.ErrProcessDone) {
-			// Identity/permission failures never cause numeric-PID signaling.
-			// Forced teardown below must still prove the whole namespace died.
+	process := gateway.ManagedProcess{PID: cmd.Process.Pid, Done: done, FenceIdleStop: policy.fenceIdle, GracefulStop: newSandboxGracefulStop(&mu, tracker.Terminate, confirmedStop, waited),
+		ConfirmStopped: func(ctx context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			select {
+			case <-waited:
+				return confirmedStop(ctx)
+			default:
+				return gateway.ErrGatewayStopFailed
+			}
+		}, VerifyListeners: func(ctx context.Context) error {
+			block := s.cfg.GatewayPortBlockSize
+			if block < 1 {
+				block = 1
+			}
+			err := tracker.VerifyListeners(ctx, spec.Port, block)
+			if err != nil {
+				log.Printf("runtime-agent sandbox listener attribution failed: %v", err)
+			}
+			return err
+		}, Stop: func(ctx context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			select {
+			case <-waited:
+				return confirmedStop(ctx)
+			default:
+			}
+			timeout := s.cfg.ProcessStopTimeout
+			if timeout <= 0 {
+				timeout = 20 * time.Second
+			}
+			// Signal the pinned primary gateway so its application shutdown hooks
+			// can flush data. Killing the monitor first tears down its namespace.
+			signalCtx, cancelSignal := context.WithTimeout(ctx, 2*time.Second)
+			signalErr := tracker.Terminate(signalCtx)
+			cancelSignal()
+			if signalErr != nil && !errors.Is(signalErr, os.ErrProcessDone) {
+				// Identity/permission failures never cause numeric-PID signaling.
+				// Forced teardown below must still prove the whole namespace died.
+				if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					return err
+				}
+			}
+			timer := time.NewTimer(timeout)
+			defer timer.Stop()
+			select {
+			case <-waited:
+				return confirmedStop(ctx)
+			case <-ctx.Done():
+				_ = cmd.Process.Kill()
+				return ctx.Err()
+			case <-timer.C:
+			}
 			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				return err
 			}
+			select {
+			case <-waited:
+				return confirmedStop(ctx)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}}
+	if s.cfg.SandboxProfile == "nfs-rootless-v1" {
+		primary := newContainerPrimaryStop(&mu, tracker.Terminate, kill, waited, s.cfg.ProcessStopTimeout)
+		prepare := func(ctx context.Context, graceful bool) error {
+			if err := primary(ctx, graceful); err != nil {
+				return err
+			}
+			return tracker.Close()
 		}
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-		select {
-		case <-waited:
-			return confirmedStop(ctx)
-		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			return ctx.Err()
-		case <-timer.C:
+		process.PrepareReset = prepare
+		process.GracefulStop = func(ctx context.Context) error {
+			return errors.Join(prepare(ctx, true), sandbox.ErrContainerResetRequired)
 		}
-		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return err
+		process.Stop = func(ctx context.Context) error {
+			return errors.Join(prepare(ctx, false), sandbox.ErrContainerResetRequired)
 		}
-		select {
-		case <-waited:
-			return confirmedStop(ctx)
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}}
+		process.ConfirmStopped = func(context.Context) error { return sandbox.ErrContainerResetRequired }
+	}
 	return process, startErr
 }
 
@@ -155,7 +200,7 @@ func (s sandboxStarter) businessCommandSpec(spec gateway.GatewayStartSpec) (sand
 	if err != nil {
 		return sandbox.Spec{}, nil, err
 	}
-	commandSpec := sandbox.Spec{Args: command, Env: env, Dir: spec.WorkspacePath, UID: spec.UID, GID: spec.GID, Mounts: mounts, TmpSource: tmpSource}
+	commandSpec := sandbox.Spec{ContainerLifecycle: s.cfg.SandboxProfile == "nfs-rootless-v1", Args: command, Env: env, Dir: spec.WorkspacePath, UID: spec.UID, GID: spec.GID, Mounts: mounts, TmpSource: tmpSource}
 	if s.cfg.NetworkSecurityProfile != "" {
 		session, err := s.network.lookup(spec)
 		if err != nil {

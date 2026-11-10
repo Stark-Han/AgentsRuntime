@@ -25,6 +25,9 @@ var (
 )
 
 type Config struct {
+	// WorkspaceHealthCheck performs fixed private-file validation under the active instance identity.
+	WorkspaceHealthCheck   func(context.Context, GatewayStartSpec) error
+	SandboxProfile         string
 	NetworkSecurityProfile string
 	NetworkSlotIndex       int
 	NetworkSlotCount       int
@@ -196,15 +199,25 @@ type GatewayStartSpec struct {
 	Generation    int
 	Command       []string
 	Env           []string
+	// Stdin carries bounded native-operation payloads without exposing them in argv.
+	Stdin []byte
 }
 
 type ManagedProcess struct {
+	// PrepareReset joins only the primary application shutdown. It never proves
+	// detached descendants ended and cannot authorize writer release.
+	PrepareReset    func(context.Context, bool) error
 	VerifyListeners func(context.Context) error
 	PID             int
 	Stop            func(context.Context) error
 	Done            <-chan error
+	// ConfirmStopped proves the entire owned scope has ended without signaling.
+	ConfirmStopped func(context.Context) error
+	// FenceIdleStop atomically persists graceful policy against asynchronous
+	// process teardown sources such as network failure.
+	FenceIdleStop func(persist func() error) error
 	// GracefulStop never escalates to SIGKILL. Success confirms leader reaping
-	// AND disappearance of its process group, not arbitrary detached children.
+	// and the entire owned scope (sandbox namespace or legacy process group).
 	GracefulStop func(context.Context) error
 }
 

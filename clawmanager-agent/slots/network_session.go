@@ -26,6 +26,7 @@ type networkSession struct {
 	hosts, resolver            string
 	wrap                       func(*exec.Cmd, int, int, []uint32) error
 	release                    func(context.Context) error
+	fenceIngress               func()
 	mu                         sync.Mutex
 	closing, closed, uncertain bool
 	aux                        sync.WaitGroup
@@ -53,7 +54,13 @@ func (o *networkOwner) prepare(ctx context.Context, cfg gateway.Config, req gate
 	if build == nil {
 		build = prepareNetworkSession
 	}
-	session, err := build(ctx, cfg, req, port)
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Networking belongs to the writer scope, not the process monitor context.
+	// Keep credentials/ingress available until confirmed process and auxiliary
+	// teardown invokes cleanup; native idle commitment must survive cancellation.
+	session, err := build(context.WithoutCancel(ctx), cfg, req, port)
 	if session != nil {
 		session.req = req
 		session.port = port
