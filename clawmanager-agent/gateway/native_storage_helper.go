@@ -24,6 +24,16 @@ func NativeStorageFailureCode(err error) string {
 		}
 	}
 	code := "helper failed"
+	var diagnostic interface{ SafeDiagnosticCode() string }
+	if errors.As(err, &diagnostic) {
+		for _, stage := range []string{"open_base", "resolve_workspace", "open_workspace", "open_directory", "list_directory", "read", "transform", "recheck", "replace"} {
+			for _, kind := range []string{"generated", "yaml", "json", "env"} {
+				if diagnostic.SafeDiagnosticCode() == stage+"_"+kind {
+					return "native_storage_" + phase + ": " + stage + "_" + kind
+				}
+			}
+		}
+	}
 	switch {
 	case errors.Is(err, syscall.EACCES):
 		code = "permission denied"

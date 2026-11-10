@@ -41,6 +41,14 @@ func nativeStorageFailureCategory(output []byte, err error) string {
 			break
 		}
 	}
+	for _, stage := range []string{"open_base", "resolve_workspace", "open_workspace", "open_directory", "list_directory", "read", "transform", "recheck", "replace"} {
+		for _, kind := range []string{"generated", "yaml", "json", "env"} {
+			code := stage + "_" + kind
+			if strings.Contains(text, ": "+code) {
+				return phase + code
+			}
+		}
+	}
 	for _, entry := range []struct{ needle, code string }{
 		{"native helper identity mismatch", "helper_identity"},
 		{"unsafe managed", "unsafe_managed_configuration"},
