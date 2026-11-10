@@ -54,6 +54,7 @@ func NativeStorageFailureCode(err error) string {
 // NativeStorageConfig contains only configuration the instance already receives
 // through its generated native files. Management credentials are not serializable.
 type NativeStorageConfig struct {
+	TeamGrant                                                          *NativeTeamGrant
 	RuntimeType, WorkspaceRoot, SandboxProfile, NetworkSecurityProfile string
 	OpenClawVersion, GatewayAuthMode, PublicOrigin, ProxyPolicyFile    string
 	GatewayPortStart, GatewayPortEnd, GatewayPortBlockSize             int
@@ -158,6 +159,7 @@ func RunNativeStorageHelper(profile RuntimeProfile, args []string, in io.Reader,
 	}
 	req := op.Request
 	cfg := op.Config.config(profile)
+	cfg.NativeTeamGrant = op.Config.TeamGrant
 	if profile == nil || cfg.SandboxProfile != "nfs-rootless-v1" || cfg.NetworkSecurityProfile != "isolated-network-v1" || req.SecurityProfile != cfg.NetworkSecurityProfile || req.AgentType != cfg.RuntimeType || req.Generation < 1 || op.Port < 1024 || op.Port > 65535 || profile.Type() != cfg.RuntimeType || req.UID < 200001 || req.GID != req.UID || os.Geteuid() != req.UID || os.Getegid() != req.GID {
 		return true, fmt.Errorf("native helper identity mismatch")
 	}

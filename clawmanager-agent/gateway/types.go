@@ -25,6 +25,9 @@ var (
 )
 
 type Config struct {
+	// NativeTeamGrant is supplied only by the management-side storage helper.
+	// It pins the authorized directory across a user namespace's GID mapping.
+	NativeTeamGrant *NativeTeamGrant
 	// WorkspaceHealthCheck performs fixed private-file validation under the active instance identity.
 	WorkspaceHealthCheck   func(context.Context, GatewayStartSpec) error
 	SandboxProfile         string

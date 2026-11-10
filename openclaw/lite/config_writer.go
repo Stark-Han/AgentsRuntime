@@ -1238,5 +1238,5 @@ func writeTeamConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, works
 	if cfg.RuntimeType != "openclaw" {
 		return nil
 	}
-	return gateway.WriteLiteTeamConfigJSON(req, workspace)
+	return gateway.WriteLiteTeamConfigJSONForConfig(cfg, req, workspace)
 }

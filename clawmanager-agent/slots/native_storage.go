@@ -18,7 +18,12 @@ func (s sandboxStarter) PrepareNativeStorage(ctx context.Context, req gateway.Cr
 	if err != nil {
 		return err
 	}
-	payload, err := json.Marshal(gateway.NativeStorageRequest{Config: gateway.NativeConfig(s.cfg), Request: req, Port: port})
+	config := gateway.NativeConfig(s.cfg)
+	config.TeamGrant, err = gateway.PinNativeTeamGrant(s.cfg, req)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(gateway.NativeStorageRequest{Config: config, Request: req, Port: port})
 	if err != nil {
 		return err
 	}
