@@ -124,13 +124,16 @@ func RunNativeStorageHelper(profile RuntimeProfile, args []string, in io.Reader,
 	}
 	if migrator, ok := profile.(ManagedCredentialMigrator); ok {
 		if err := migrator.MigrateManagedCredentials(context.Background(), cfg, req, req.WorkspacePath); err != nil {
-			return true, err
+			return true, fmt.Errorf("native_storage_credentials: %w", err)
 		}
 	} else if cfg.NetworkSecurityProfile != "" {
 		return true, fmt.Errorf("native credential migrator unavailable")
 	}
 	if err := profile.PrepareWorkspace(cfg, req, req.WorkspacePath); err != nil {
-		return true, err
+		return true, fmt.Errorf("native_storage_workspace: %w", err)
 	}
-	return true, profile.WriteGatewayConfig(cfg, req, req.WorkspacePath, op.Port)
+	if err := profile.WriteGatewayConfig(cfg, req, req.WorkspacePath, op.Port); err != nil {
+		return true, fmt.Errorf("native_storage_config: %w", err)
+	}
+	return true, nil
 }
