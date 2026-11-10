@@ -3,11 +3,43 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/iamlovingit/clawmanager-agent/workspaceio"
 	"io"
 	"os"
+	"strings"
+	"syscall"
 )
+
+// The auxiliary process has no trusted diagnostic transport besides stderr.
+// Emit only fixed phase/errno categories, never errors containing config text.
+func NativeStorageFailureCode(err error) string {
+	phase := "helper"
+	text := strings.ToLower(err.Error())
+	for _, name := range []string{"credentials", "workspace", "config"} {
+		if strings.Contains(text, "native_storage_"+name+":") {
+			phase = name
+			break
+		}
+	}
+	code := "helper failed"
+	switch {
+	case errors.Is(err, syscall.EACCES):
+		code = "permission denied"
+	case errors.Is(err, syscall.EPERM):
+		code = "operation not permitted"
+	case errors.Is(err, syscall.ENOENT):
+		code = "no such file"
+	case strings.Contains(text, "identity mismatch"):
+		code = "native helper identity mismatch"
+	case strings.Contains(text, "unsafe"):
+		code = "unsafe configuration"
+	case strings.Contains(text, "credential"):
+		code = "credential configuration"
+	}
+	return "native_storage_" + phase + ": " + code
+}
 
 // NativeStorageConfig contains only configuration the instance already receives
 // through its generated native files. Management credentials are not serializable.

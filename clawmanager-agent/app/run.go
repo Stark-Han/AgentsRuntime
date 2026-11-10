@@ -42,7 +42,7 @@ func Run(profile gateway.RuntimeProfile) {
 	}
 	if handled, err := gateway.RunNativeStorageHelper(profile, os.Args[1:], os.Stdin, os.Stdout); handled {
 		if err != nil {
-			_, _ = os.Stderr.WriteString("managed_native_storage_failed\n")
+			_, _ = os.Stderr.WriteString("managed_native_storage_failed: " + gateway.NativeStorageFailureCode(err) + "\n")
 			os.Exit(2)
 		}
 		return
