@@ -62,9 +62,36 @@ def toolset_filter(fn):
 
 def install_gateway(namespace):
     """Install policy wrappers after upstream's split-module rebinding."""
+    from agent import reasoning_params
+    if not getattr(reasoning_params.unset_reasoning_default, "_clawmanager_managed_default", False):
+        reasoning_params.unset_reasoning_default = managed_reasoning_default(reasoning_params.unset_reasoning_default)
     for name in ("_gui_surface_toolsets", "_load_enabled_toolsets"):
         namespace[name] = toolset_filter(namespace[name])
     namespace["_methods"]["config.set"] = session_config(namespace["_methods"]["config.set"])
+
+
+def managed_reasoning_default(fn):
+    """Opaque CM routes own unset reasoning; never inject a vendor effort.
+
+    Native 0.22.5 started sending medium for every custom endpoint. CM auto
+    routes can resolve to providers that reject that vocabulary. Only omit the
+    new implicit default for a sealed Lite agent on a custom profile. Explicit
+    session/per-model reasoning bypasses this upstream unset-only hook.
+    """
+    @wraps(fn)
+    def configured(agent):
+        if (getattr(agent, "_clawmanager_non_native_seal", None) is _AGENT_SEAL
+                and getattr(agent, "api_mode", None) == "chat_completions"):
+            try:
+                from providers import get_provider_profile
+                profile = get_provider_profile(str(getattr(agent, "provider", "") or ""))
+            except Exception:
+                return fn(agent)
+            if profile is not None and profile.name == "custom":
+                return None
+        return fn(agent)
+    configured._clawmanager_managed_default = True
+    return configured
 
 
 def tool_dispatch(fn):
