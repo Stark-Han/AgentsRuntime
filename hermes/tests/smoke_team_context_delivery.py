@@ -38,7 +38,9 @@ async def main():
         await bridge._dispatch_envelope(notice, context_only=True)
         messages = [{"role":"tool","content":"Actual tool result"}]
         apply_pending_steer_to_tool_results(native,messages,1)
-        assert messages[0]["content"].count("Keep the existing work") == 1
+        # 0.22.5 persists native steering as a new user row instead of
+        # rewriting the previous tool result. Accept either native layout.
+        assert sum(str(row.get("content", "")).count("Keep the existing work") for row in messages) == 1
         adapter._record_context_request(settings, {"request_messages":messages,"api_request_id":"request-1","session_id":"session-1"})
         value = adapter._read_json(adapter._context_notice_path(settings))["notice"]
         assert value["state"] == "request_included" and value["apiRequestId"] == "request-1"
