@@ -78,9 +78,9 @@ RUN python3 /usr/local/share/deepseek-harness/patch-persistent-tmp.py \
 # the native connection's loopback/host-ownership checks for other capabilities.
 COPY deepseek-harness/scripts/patch-managed-settings.py tests/lite/test_deepseek_settings.mjs /usr/local/share/deepseek-harness/
 RUN python3 /usr/local/share/deepseek-harness/patch-managed-settings.py \
-    /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js \
+    /opt/clawmanager-dsh/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js \
     && node /usr/local/share/deepseek-harness/test_deepseek_settings.mjs \
-    /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js
+    /opt/clawmanager-dsh/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js
 
 COPY --from=agent-builder /out/clawmanager-agent /usr/local/bin/clawmanager-agent
 COPY --from=agent-builder /out/clawmanager-agent /usr/local/libexec/clawmanager-agent-image

@@ -4,4 +4,5 @@ FROM ${BASE_IMAGE}
 ARG RUNTIME_TYPE
 ARG VCS_REF
 COPY --chmod=755 --from=manager-binaries /${RUNTIME_TYPE}-agent /usr/local/bin/clawmanager-agent
+COPY --chmod=755 --from=manager-binaries /${RUNTIME_TYPE}-agent /usr/local/libexec/clawmanager-agent-image
 LABEL org.opencontainers.image.revision=$VCS_REF
