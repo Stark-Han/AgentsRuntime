@@ -50,6 +50,15 @@ func (p Profile) GatewayCommand(string) []string {
 func (p Profile) GatewayEnv(base []string, cfg gateway.Config, req gateway.CreateGatewayRequest, workspacePath string, port int) []string {
 	env := append([]string(nil), base...)
 	env = gateway.ApplyRequestEnvironment(env, req)
+	// These are capabilities of the delivered image, not instance overrides.
+	// The slot starts with a reviewed environment rather than inheriting the Pod.
+	for _, key := range []string{"CLAWMANAGER_MODEL_GOVERNANCE_PROTOCOL", "CLAWMANAGER_REDIS_TEAM_PLUGIN_VERSION", "OPENCODE_RUNTIME_MAJOR"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = setEnv(env, key, value)
+		} else {
+			env = unsetEnv(env, key)
+		}
+	}
 	env = gateway.ApplyLiteTeamConfigEnvironment(env, req, workspacePath)
 	projectPath, projectRelativePath, fallbackReason := resolveOpenCodeProjectPath(req, workspacePath)
 	if fallbackReason != "" {
