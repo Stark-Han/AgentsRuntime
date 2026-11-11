@@ -216,6 +216,7 @@ func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, wo
 	if len(cfg.TrustedProxies) > 0 {
 		gatewayConfig["trustedProxies"] = appendUniqueStringArray(gatewayConfig["trustedProxies"], cfg.TrustedProxies...)
 	}
+	cfg.OpenClawVersion = openClawVersion
 	mergeOpenClawLLMConfig(config, cfg)
 	if IsOpenClawAtLeast(openClawVersion, OpenClaw81Version) {
 		openclawcompat.Normalize81(config)
