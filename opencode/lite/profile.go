@@ -234,7 +234,7 @@ func (p Profile) PrepareWorkspace(cfg gateway.Config, req gateway.CreateGatewayR
 		return err
 	}
 	projectPath, _, _ := resolveOpenCodeProjectPath(req, workspacePath)
-	if err := gateway.PrepareLiteTeamSharedWorkspace(cfg.WorkspaceRoot, req, workspacePath, projectPath); err != nil {
+	if err := gateway.PrepareLiteTeamSharedWorkspaceForConfig(cfg, req, workspacePath, projectPath); err != nil {
 		return fmt.Errorf("prepare OpenCode Team workspace: %w", err)
 	}
 	if err := gateway.WriteLiteTeamConfigJSONForConfig(cfg, req, workspacePath); err != nil {
