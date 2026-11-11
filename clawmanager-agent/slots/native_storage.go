@@ -55,6 +55,8 @@ func nativeStorageFailureCategory(output []byte, err error) string {
 		}
 	}
 	for _, entry := range []struct{ needle, code string }{
+		{"incompatible_workspace_version", "workspace_version_migration_required"},
+		{"no module named", "missing_python_module"},
 		{"native helper identity mismatch", "helper_identity"},
 		{"unsafe managed", "unsafe_managed_configuration"},
 		{"foreign", "untrusted_inode"},
