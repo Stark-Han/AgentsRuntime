@@ -1,0 +1,7 @@
+# Keep each immutable native Lite payload; update its trusted sandbox manager.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG RUNTIME_TYPE
+ARG VCS_REF
+COPY --chmod=755 --from=manager-binaries /${RUNTIME_TYPE}-agent /usr/local/bin/clawmanager-agent
+LABEL org.opencontainers.image.revision=$VCS_REF
