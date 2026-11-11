@@ -501,30 +501,48 @@ class RedisClient {
     this.closed = false;
   }
   async connect() {
+    if (this.closed) throw new Error("redis client is closed");
+    if (this.connecting) return this.connecting;
+    if (this.socket && !this.socket.destroyed && this.socket.writable) return;
+    const attempt = this.connectTransport();
+    this.connecting = attempt;
+    try { await attempt; } finally { if (this.connecting === attempt) this.connecting = null; }
+  }
+  async connectTransport() {
+    if (this.socket) {
+      this.socket.destroy();
+      this.rejectAll(new Error("redis connection closed"));
+    }
     const port = Number(this.url.port || (this.url.protocol === "rediss:" ? 6380 : 6379));
     const host = this.url.hostname || "127.0.0.1";
-    this.socket =
+    const socket =
       this.url.protocol === "rediss:"
         ? tls.connect({ host, port, servername: host })
         : net.connect({ host, port });
-    this.socket.on("data", (chunk) => {
+    this.socket = socket;
+    this.parser = new RespParser();
+    socket.on("data", (chunk) => {
+      if (this.socket !== socket) return;
       this.parser.push(chunk);
       this.drain();
     });
-    this.socket.on("error", (err) => this.rejectAll(err));
-    this.socket.on("close", () => this.rejectAll(new Error("redis connection closed")));
-    await new Promise((resolve, reject) => {
-      this.socket.once("connect", resolve);
-      this.socket.once("error", reject);
-    });
+    socket.on("error", (err) => { if (this.socket === socket) this.rejectAll(err); });
+    socket.on("close", () => { if (this.socket === socket) this.rejectAll(new Error("redis connection closed")); });
+    try {
+      await new Promise((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+        socket.once("close", () => reject(new Error("redis connection closed")));
+      });
     const user = decodeURIComponent(this.url.username || "");
     const pass = decodeURIComponent(this.url.password || "");
     if (pass) {
-      if (user) await this.command("AUTH", user, pass);
-      else await this.command("AUTH", pass);
+      if (user) await this.connectedCommand("AUTH", user, pass);
+      else await this.connectedCommand("AUTH", pass);
     }
     const db = this.url.pathname.replace(/^\//, "");
-    if (db) await this.command("SELECT", db);
+    if (db) await this.connectedCommand("SELECT", db);
+    } catch (err) { socket.destroy(); throw err; }
   }
   drain() {
     while (this.pending.length) {
@@ -540,8 +558,15 @@ class RedisClient {
   rejectAll(err) {
     while (this.pending.length) this.pending.shift().reject(err);
   }
-  command(...args) {
+  async command(...args) {
+    await this.connect();
+    // Reconnect only before writing a NEW command. Never replay a command whose
+    // response was lost; its caller retains existing receipt/idempotency rules.
+    return this.connectedCommand(...args);
+  }
+  connectedCommand(...args) {
     if (this.closed) return Promise.reject(new Error("redis client is closed"));
+    if (!this.socket || this.socket.destroyed || !this.socket.writable) return Promise.reject(new Error("redis connection closed"));
     return new Promise((resolve, reject) => {
       this.pending.push({ resolve, reject });
       this.socket.write(encodeResp(args));
@@ -549,6 +574,7 @@ class RedisClient {
   }
   close() {
     this.closed = true;
+    this.rejectAll(new Error("redis client is closed"));
     if (this.socket) this.socket.destroy();
   }
 }
