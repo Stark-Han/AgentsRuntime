@@ -14,6 +14,7 @@ import (
 
 	"github.com/iamlovingit/clawmanager-agent/gateway"
 	"github.com/iamlovingit/clawmanager-agent/llmconfig"
+	"github.com/iamlovingit/clawmanager-agent/managedconfig"
 	"github.com/iamlovingit/clawmanager-agent/openclawcompat"
 )
 
@@ -128,6 +129,7 @@ func WriteGatewayConfig(cfg gateway.Config, req gateway.CreateGatewayRequest, wo
 		return fmt.Errorf("read openclaw config: %w", err)
 	}
 	openClawVersion := resolveOpenClawVersion(cfg, req)
+	cfg.OpenClawVersion = openClawVersion
 	configureManagedOpenClawBrowser(config, req, port)
 	mergeOpenClawLiteDefaults(config, openClawVersion)
 	reconcileOpenClawBrowserPlugin(config)
@@ -1020,6 +1022,9 @@ func mergeOpenClawProviderConnection(providers map[string]any, providerID string
 	provider := ensureObject(providers, providerID)
 	if cfg.LLMBaseURL != "" {
 		provider["baseUrl"] = cfg.LLMBaseURL
+	}
+	if cfg.NetworkSecurityProfile == "isolated-network-v1" && cfg.LLMBaseURL == managedconfig.ModelURL && IsOpenClawAtLeast(cfg.OpenClawVersion, "2026.10.2") {
+		allowManagedOpenClawModelRelay(provider)
 	}
 	if cfg.LLMAPIKeySet {
 		provider["apiKey"] = cfg.LLMAPIKey
