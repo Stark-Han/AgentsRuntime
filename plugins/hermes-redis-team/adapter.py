@@ -4287,6 +4287,12 @@ class RedisTeamAdapter(BasePlatformAdapter):
                     _atomic_write_json(path,current)
 
     async def _dispatch_envelope(self, envelope: dict[str, Any], *, context_only: bool = False) -> None:
+        # A cold restart may drain old result/recovery notifications. A proven
+        # terminal root must not inject context into a newer execution. Missing
+        # or unreadable projections retain the existing compatibility path.
+        if context_only and self._redis and await _root_task_is_terminal(self._redis, self.settings, envelope):
+            logger.info("Ignored context for terminal root task: %s", envelope.get("messageId"))
+            return
         if context_only and await self._accept_active_context(envelope):
             return
         source = SessionSource(

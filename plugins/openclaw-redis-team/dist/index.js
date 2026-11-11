@@ -3610,7 +3610,16 @@ async function waitForCompletionAcknowledgement(redis, cfg, completionId, attemp
 }
 
 async function workflowReminderIsStale(cfg, envelope, log = console) {
-  if (!isWorkflowReminderEnvelope(envelope)) return false;
+  if (!isWorkflowReminderEnvelope(envelope)) {
+    // Member-result and older recovery notifications can remain unread across
+    // a stopped Team. Their exact root is already closed; waking its model can
+    // pollute the next root's session. Unknown/current roots still pass through.
+    if (isContextOnlyEnvelope(envelope) && await rootEnvelopeIsTerminal(cfg, envelope)) {
+      log?.info?.("redis-team: suppressed terminal-root context " + envelope.messageId);
+      return true;
+    }
+    return false;
+  }
   const rootTaskId = preferredRootTaskId(envelope?.rootTaskId, envelope?.taskId);
   if (!rootTaskId || !cfg?.redisUrl) return false;
   const redis = new RedisClient(cfg.redisUrl);

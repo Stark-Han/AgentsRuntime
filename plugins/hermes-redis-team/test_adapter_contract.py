@@ -1414,6 +1414,27 @@ class HermesRedisTeamContractTests(unittest.TestCase):
             self.assertTrue(any(event.get("event") == "late_assignment_ignored" for event in events))
             self.assertFalse(any(event.get("event") in {"task_received", "task_started"} for event in events))
 
+    def test_terminal_root_context_does_not_enter_a_new_execution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self.settings(Path(tmp))
+            envelope = {"messageId": "old-result", "taskId": "team-42-task-7",
+                        "rootTaskId": "team-42-task-7", "from": "chief", "to": "developer",
+                        "text": "An old accepted result", "requiresCompletion": False,
+                        "intent": "member_result_confirmed"}
+
+            async def run_test():
+                with mock.patch.object(adapter, "load_settings", return_value=settings):
+                    instance = adapter.RedisTeamAdapter(types.SimpleNamespace(extra={}))
+                instance._redis = mock.Mock()
+                instance._accept_active_context = mock.AsyncMock(return_value=True)
+                with mock.patch.object(adapter, "_root_task_is_terminal", new=mock.AsyncMock(return_value=True)):
+                    await instance._dispatch_envelope(envelope, context_only=True)
+                instance._accept_active_context.assert_not_awaited()
+                with mock.patch.object(adapter, "_root_task_is_terminal", new=mock.AsyncMock(return_value=False)):
+                    await instance._dispatch_envelope(envelope, context_only=True)
+                instance._accept_active_context.assert_awaited_once_with(envelope)
+            asyncio.run(run_test())
+
     def test_root_terminal_race_after_receive_clears_busy_assignment(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = self.settings(Path(tmp))
