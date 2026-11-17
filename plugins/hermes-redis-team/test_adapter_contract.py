@@ -2073,8 +2073,12 @@ class ActiveContextDeliveryTests(unittest.TestCase):
                     if args[0]=="HSET":instance.is_connected=False
                     return "OK"
             instance._redis=PresenceRedis()
+            async def finish_cycle(_delay):
+                # End both the success and exception paths. A regression must
+                # fail the missing-HSET assertion, never spin indefinitely.
+                instance.is_connected=False
             async def run():
-                with mock.patch.object(adapter.asyncio,"sleep",new=mock.AsyncMock()):
+                with mock.patch.object(adapter.asyncio,"sleep",new=mock.AsyncMock(side_effect=finish_cycle)):
                     await asyncio.wait_for(instance._presence_loop(),timeout=1)
             asyncio.run(run())
             self.assertEqual(adapter._load_active_envelope(settings),{})
