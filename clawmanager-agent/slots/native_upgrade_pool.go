@@ -184,11 +184,18 @@ func (s *nativeUpgradeSession) acquireWriter(cfg gateway.Config) error {
 		file.Close()
 		return err
 	}
-	if current.InstanceID != r.InstanceID || current.UserID != r.UserID || current.Generation != r.Generation || current.RuntimeType != cfg.RuntimeType {
+	// Explicit recovery may follow one or more SQL generations that never
+	// published a native writer. The locked original record must still be
+	// positively stopped; its real generation is retained in Previous and is
+	// restored unchanged. Ordinary upgrades keep exact-generation admission.
+	holder := "maintenance-" + s.record.Operation.OperationID
+	previous := s.record.Previous
+	resumingStoppedSource := current.State == "upgrading" && current.Slot == holder && current.PodUID == cfg.PodUID && previous != nil && previous.State == "stopped" && previous.InstanceID == current.InstanceID && previous.UserID == current.UserID && previous.Generation == current.Generation && previous.RuntimeType == current.RuntimeType
+	restoredSource := (r.RecoveryMode == "retry" || r.RecoveryMode == "rebuild") && (current.State == "stopped" || resumingStoppedSource) && current.Generation > 0 && current.Generation < r.Generation
+	if current.InstanceID != r.InstanceID || current.UserID != r.UserID || (current.Generation != r.Generation && !restoredSource) || current.RuntimeType != cfg.RuntimeType {
 		file.Close()
 		return fmt.Errorf("native stopped writer identity changed")
 	}
-	holder := "maintenance-" + s.record.Operation.OperationID
 	if current.State == "stopped" {
 		if s.record.Previous == nil {
 			copy := *current
