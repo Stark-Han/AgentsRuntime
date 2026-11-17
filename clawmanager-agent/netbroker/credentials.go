@@ -5,9 +5,13 @@ package netbroker
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
@@ -22,6 +26,9 @@ const operationTimeout = 5 * time.Second
 const maxHeaders = 16 << 10
 
 var errCredentials = errors.New("netbroker: credentials unavailable")
+var errLeaseTemporary = fmt.Errorf("%w: lease temporarily unavailable", errCredentials)
+var errLeaseRejected = fmt.Errorf("%w: lease rejected", errCredentials)
+var errLeaseExpired = fmt.Errorf("%w: lease expired", errCredentials)
 
 type Identity struct {
 	InstanceID int    `json:"instance_id"`
@@ -118,14 +125,29 @@ func Acquire(ctx context.Context, base, controlToken string, id Identity) (Lease
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
 	if err != nil {
+		// A certificate/redirect/configuration error is not a transient outage.
+		var certificate *tls.CertificateVerificationError
+		var network net.Error
+		var operation *net.OpError
+		if !errors.As(err, &certificate) && (ctx.Err() != nil || errors.As(err, &operation) || (errors.As(err, &network) && network.Timeout()) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+			return Lease{}, errLeaseTemporary
+		}
 		return Lease{}, errCredentials
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return Lease{}, errCredentials
+		switch response.StatusCode {
+		case 429, 500, 502, 503, 504:
+			return Lease{}, errLeaseTemporary
+		default:
+			return Lease{}, errLeaseRejected
+		}
 	}
 	b, err := io.ReadAll(io.LimitReader(response.Body, maxHeaders+1))
-	if err != nil || len(b) > maxHeaders {
+	if err != nil {
+		return Lease{}, errLeaseTemporary
+	}
+	if len(b) > maxHeaders {
 		return Lease{}, errCredentials
 	}
 	var lease Lease
@@ -146,8 +168,10 @@ func Acquire(ctx context.Context, base, controlToken string, id Identity) (Lease
 }
 
 type credentialTiming struct {
-	renew time.Duration
-	now   func() time.Time
+	renew    time.Duration
+	now      func() time.Time
+	retryMin time.Duration
+	retryMax time.Duration
 }
 
 // Credentials must not be copied. Close joins the refresh worker and clears tokens.
@@ -162,7 +186,7 @@ type Credentials struct {
 }
 
 func NewCredentials(ctx context.Context, base, token string, id Identity) (*Credentials, error) {
-	return newCredentials(ctx, base, token, id, credentialTiming{5 * time.Minute, time.Now})
+	return newCredentials(ctx, base, token, id, credentialTiming{renew: 5 * time.Minute, now: time.Now})
 }
 func newCredentials(parent context.Context, base, token string, id Identity, timing credentialTiming) (*Credentials, error) {
 	lease, err := Acquire(parent, base, token, id)
@@ -173,24 +197,64 @@ func newCredentials(parent context.Context, base, token string, id Identity, tim
 	c := &Credentials{lease: lease, ctx: ctx, cancel: cancel, done: make(chan struct{}), timing: timing}
 	go func() {
 		defer close(c.done)
-		defer c.invalidate(errCredentials)
-		ticker := time.NewTicker(timing.renew)
-		defer ticker.Stop()
+		terminal := errCredentials
+		defer func() { c.invalidate(terminal) }()
+		nextRefresh := time.NewTimer(timing.renew)
+		defer nextRefresh.Stop()
 		expiry := time.NewTimer(lease.ExpiresAt.Sub(timing.now()))
 		defer expiry.Stop()
+		retryMin, retryMax := timing.retryMin, timing.retryMax
+		if retryMin <= 0 {
+			retryMin = time.Second
+		}
+		if retryMax < retryMin {
+			retryMax = 30 * time.Second
+		}
+		backoff := retryMin
+		failures := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-expiry.C:
+				terminal = errLeaseExpired
 				return
-			case <-ticker.C:
+			case <-nextRefresh.C:
 				// A refresh may not extend an already expired management lifetime.
 				refreshCtx, stop := context.WithDeadline(ctx, lease.ExpiresAt)
 				next, err := Acquire(refreshCtx, base, token, id)
 				stop()
-				if err != nil || !timing.now().Before(lease.ExpiresAt) {
+				if !timing.now().Before(lease.ExpiresAt) {
+					terminal = errLeaseExpired
 					return
+				}
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					if !errors.Is(err, errLeaseTemporary) {
+						terminal = err
+						log.Printf("runtime lease rejected: instance_id=%d generation=%d", id.InstanceID, id.Generation)
+						return
+					}
+					failures++
+					// Only renewal is retried. No business request is replayed and the
+					// signed lease's original expiry remains the hard deadline.
+					delay := backoff/2 + time.Duration(rand.Int64N(int64(backoff-backoff/2)+1))
+					remaining := lease.ExpiresAt.Sub(timing.now())
+					if delay > remaining {
+						delay = remaining
+					}
+					if failures == 1 {
+						log.Printf("runtime lease retrying: instance_id=%d generation=%d remaining_seconds=%d", id.InstanceID, id.Generation, int64(remaining/time.Second))
+					}
+					nextRefresh.Reset(delay)
+					if backoff < retryMax/2 {
+						backoff *= 2
+					} else {
+						backoff = retryMax
+					}
+					continue
 				}
 				c.mu.Lock()
 				if ctx.Err() == nil {
@@ -198,6 +262,12 @@ func newCredentials(parent context.Context, base, token string, id Identity, tim
 				}
 				c.mu.Unlock()
 				lease = next
+				if failures > 0 {
+					log.Printf("runtime lease recovered: instance_id=%d generation=%d failed_attempts=%d", id.InstanceID, id.Generation, failures)
+				}
+				failures = 0
+				backoff = retryMin
+				nextRefresh.Reset(timing.renew)
 				if !expiry.Stop() {
 					select {
 					case <-expiry.C:

@@ -102,7 +102,7 @@ func TestCredentialsRenewAndFailClosed(t *testing.T) {
 	server := leaseServer(t, func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
 		if n >= 3 {
-			w.WriteHeader(503)
+			w.WriteHeader(403)
 			return
 		}
 		lease := testLease()
