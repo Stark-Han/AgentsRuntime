@@ -177,7 +177,11 @@ func (m *GatewayManager) runIsolatedGateway(ctx context.Context, record *gateway
 		if stop != nil {
 			stopCtx, cancel := context.WithTimeout(context.Background(), m.stopTimeout()+5*time.Second)
 			if err := stop(stopCtx); err != nil {
-				if process.PrepareReset == nil || failure == nil {
+				if process.PrepareReset != nil && onlyContainerResetRequired(err) {
+					// Keep FailureClass/ExitCode as the original trigger, while the
+					// actionable error still requests the existing container proof.
+					failure = fmt.Errorf("container_reset_required")
+				} else if process.PrepareReset == nil || failure == nil {
 					if process.PrepareReset != nil && onlyContainerResetRequired(err) {
 						failure = fmt.Errorf("container_reset_required")
 					} else {
@@ -339,7 +343,7 @@ func (m *GatewayManager) runIsolatedGateway(ctx context.Context, record *gateway
 		m.mu.RLock()
 		idleStop := record.idleStop
 		m.mu.RUnlock()
-		if idleStop || ctx.Err() != nil || failure == nil || errors.Is(failure, ErrGatewayStopFailed) || !m.automaticGatewayRecoveryEnabled() {
+		if idleStop || ctx.Err() != nil || failure == nil || errors.Is(failure, ErrGatewayStopFailed) || errors.Is(failure, ErrNetworkAuthorizationLost) || !m.automaticGatewayRecoveryEnabled() {
 			return
 		}
 		m.mu.Lock()
@@ -412,8 +416,8 @@ func (m *GatewayManager) monitorIsolatedGateway(ctx context.Context, record *gat
 	select {
 	case <-ctx.Done():
 		return failure
-	case <-process.Done:
-		failure = fmt.Errorf("gateway_process_exited")
+	case exit := <-process.Done:
+		failure = m.isolatedProcessExit(record, exit)
 		return failure
 	case failure = <-ready:
 		if failure != nil {
@@ -423,8 +427,8 @@ func (m *GatewayManager) monitorIsolatedGateway(ctx context.Context, record *gat
 	logStartupStage(m.cfg.RuntimeType, req, "backend_ready_wait", stageStarted)
 	stageStarted = time.Now()
 	select {
-	case <-process.Done:
-		failure = fmt.Errorf("gateway_process_exited")
+	case exit := <-process.Done:
+		failure = m.isolatedProcessExit(record, exit)
 		return failure
 	default:
 	}
@@ -501,9 +505,9 @@ func (m *GatewayManager) monitorIsolatedGateway(ctx context.Context, record *gat
 		case <-ctx.Done():
 			timer.Stop()
 			return failure
-		case <-process.Done:
+		case exit := <-process.Done:
 			timer.Stop()
-			failure = fmt.Errorf("gateway_process_exited")
+			failure = m.isolatedProcessExit(record, exit)
 			return failure
 		case <-timer.C:
 		}
@@ -513,8 +517,8 @@ func (m *GatewayManager) monitorIsolatedGateway(ctx context.Context, record *gat
 		}
 		// An exited process is terminal; a transient probe failure is not.
 		select {
-		case <-process.Done:
-			failure = fmt.Errorf("gateway_process_exited")
+		case exit := <-process.Done:
+			failure = m.isolatedProcessExit(record, exit)
 			return failure
 		default:
 		}
@@ -524,9 +528,35 @@ func (m *GatewayManager) monitorIsolatedGateway(ctx context.Context, record *gat
 	}
 }
 
+// Preserve the triggering failure independently of a later cleanup/reset error.
+// Never log arbitrary process stderr or expose it through the public state.
+func (m *GatewayManager) isolatedProcessExit(record *gatewayRecord, err error) error {
+	m.mu.Lock()
+	record.state.ExitCode = processExitCode(err)
+	record.state.FailureClass = "unexpected_process_exit"
+	if errors.Is(err, ErrNetworkAuthorizationLost) {
+		record.state.FailureClass = "network_authorization_lost"
+		retryable := false
+		record.state.Retryable = &retryable
+	}
+	code := "unknown"
+	if record.state.ExitCode != nil {
+		code = fmt.Sprint(*record.state.ExitCode)
+	}
+	log.Printf("runtime gateway process ended: instance_id=%d generation=%d pid=%d failure_class=%s exit_code=%s", record.state.InstanceID, record.state.Generation, record.state.PID, record.state.FailureClass, code)
+	m.mu.Unlock()
+	if errors.Is(err, ErrNetworkAuthorizationLost) {
+		return errors.Join(ErrNetworkAuthorizationLost, err)
+	}
+	return errors.Join(fmt.Errorf("gateway_process_exited"), err)
+}
+
 func safeGatewayError(err error) string {
 	if errors.Is(err, ErrGatewayStopFailed) {
 		return "gateway_stop_failed"
+	}
+	if errors.Is(err, ErrNetworkAuthorizationLost) {
+		return "network_authorization_lost"
 	}
 	if strings.HasPrefix(err.Error(), "clock_skew") {
 		return "clock_skew"

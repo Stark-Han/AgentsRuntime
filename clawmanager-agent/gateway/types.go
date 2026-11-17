@@ -14,16 +14,17 @@ const (
 )
 
 var (
-	ErrNoFreePort         = errors.New("no free port")
-	ErrDraining           = errors.New("runtime pod is draining")
-	ErrUpgradeStandby     = errors.New("runtime pod is waiting for upgrade activation")
-	ErrRuntimeType        = errors.New("agent_type does not match runtime type")
-	ErrWorkspacePath      = errors.New("workspace path is outside requested instance")
-	ErrStaleGeneration    = errors.New("stale gateway generation")
-	ErrActiveGeneration   = errors.New("previous gateway generation is still active")
-	ErrGatewayStartFailed = errors.New("gateway start failed")
-	ErrGatewayStopFailed  = errors.New("gateway stop was not confirmed")
-	ErrWriterLeaseActive  = errors.New("workspace writer lease is active")
+	ErrNoFreePort               = errors.New("no free port")
+	ErrDraining                 = errors.New("runtime pod is draining")
+	ErrUpgradeStandby           = errors.New("runtime pod is waiting for upgrade activation")
+	ErrRuntimeType              = errors.New("agent_type does not match runtime type")
+	ErrWorkspacePath            = errors.New("workspace path is outside requested instance")
+	ErrStaleGeneration          = errors.New("stale gateway generation")
+	ErrActiveGeneration         = errors.New("previous gateway generation is still active")
+	ErrGatewayStartFailed       = errors.New("gateway start failed")
+	ErrGatewayStopFailed        = errors.New("gateway stop was not confirmed")
+	ErrNetworkAuthorizationLost = errors.New("network_authorization_lost")
+	ErrWriterLeaseActive        = errors.New("workspace writer lease is active")
 )
 
 type Config struct {
