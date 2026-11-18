@@ -134,6 +134,9 @@ func (p *Pool) nativeSession(ctx context.Context, op gateway.NativeUpgradeOperat
 	}
 	session.unlock = unlock
 	abandon := func(err error) (*nativeUpgradeSession, error) { session.closeParent(false); return nil, err }
+	if _, err := os.Lstat(path + ".cancelled"); !os.IsNotExist(err) {
+		return abandon(fmt.Errorf("native reservation is cancelled or cannot be inspected"))
+	}
 	if op.MutatesWorkspace() {
 		leaseCtx, finish, leaseErr := p.metadata.KeepUpgradeWriterLease(scope, op.Request)
 		if leaseErr != nil && record.Launched { // Cleanup proof must remain recoverable even after lease expiry.
@@ -531,6 +534,10 @@ func (p *Pool) serveNativeUpgrades(out http.ResponseWriter, r *http.Request) boo
 	}
 	if r.Method != http.MethodPost {
 		out.WriteHeader(405)
+		return true
+	}
+	if r.URL.Path == "/v1/native-upgrades/cancel-unstarted" {
+		p.serveCancelUnstartedNativeReservation(out, r)
 		return true
 	}
 	if r.URL.Path == "/v1/native-upgrades/start" || r.URL.Path == "/v1/native-upgrades/resume" {
