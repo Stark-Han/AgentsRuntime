@@ -13,7 +13,7 @@ import (
 )
 
 type networkOwner struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	active *networkSession
 	build  func(context.Context, gateway.Config, gateway.CreateGatewayRequest, int) (*networkSession, error)
 }
@@ -183,4 +183,15 @@ func (o *networkOwner) unavailable() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.active != nil && o.active.ctx.Err() != nil
+}
+
+func (o *networkOwner) snapshotHealth() (idle, unavailable bool) {
+	if o == nil {
+		return true, false
+	}
+	if !o.mu.TryRLock() {
+		return false, true
+	}
+	defer o.mu.RUnlock()
+	return o.active == nil, o.active != nil && o.active.ctx.Err() != nil
 }

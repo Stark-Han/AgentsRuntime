@@ -99,6 +99,9 @@ func runWorker(ctx context.Context, cfg gateway.Config) error {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if worker.storageHealth != nil {
+		go worker.storageHealth.run(runCtx, storageProbeInterval)
+	}
 	if worker.reset != nil {
 		go func() {
 			select {

@@ -32,12 +32,14 @@ type Config struct {
 	// It pins the authorized directory across a user namespace's GID mapping.
 	NativeTeamGrant *NativeTeamGrant
 	// WorkspaceHealthCheck performs fixed private-file validation under the active instance identity.
-	WorkspaceHealthCheck   func(context.Context, GatewayStartSpec) error
-	SandboxProfile         string
-	NetworkSecurityProfile string
-	NetworkSlotIndex       int
-	NetworkSlotCount       int
-	NetworkEgressProxyURL  string
+	WorkspaceHealthCheck func(context.Context, GatewayStartSpec) error
+	// ManagementStorageHealth supplies workspace health for a managed slot.
+	ManagementStorageHealth func() error
+	SandboxProfile          string
+	NetworkSecurityProfile  string
+	NetworkSlotIndex        int
+	NetworkSlotCount        int
+	NetworkEgressProxyURL   string
 	// IsolatedLifecycle joins startup and teardown before releasing a container slot.
 	IsolatedLifecycle bool
 	// Non-nil GatewayBaseEnv prevents supervisor secrets entering user processes.
