@@ -100,6 +100,26 @@ func TestSlotStorageHealthRejectsExpiredAndOverdueSamples(t *testing.T) {
 	}
 }
 
+func TestStandbyRegistrationWaitsForInitialStorageEvidence(t *testing.T) {
+	sample := Snapshot{Quarantined: true, StorageUnavailable: true}
+	cfg := gateway.Config{ControlToken: "secret", GatewayPortStart: 20000, GatewayPortEnd: 20000, GatewayPortBlockSize: 1}
+	pool, err := NewPool(cfg, 1, func(_ context.Context, _ int, _, _ string, _ []byte) (int, []byte, error) {
+		data, err := json.Marshal(sample)
+		return http.StatusOK, data, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.standbySlotStorageReady(t.Context()) {
+		t.Fatal("upgrade standby advertised before first storage sample")
+	}
+	sample.StorageUnavailable = false
+	sample.MaintenanceOperationID = "previous-operation"
+	if !pool.standbySlotStorageReady(t.Context()) {
+		t.Fatal("existing maintenance could not register for reconciliation")
+	}
+}
+
 func TestPoolWorkbenchReturnsTemporaryFailureForTimedOutSlot(t *testing.T) {
 	cfg := gateway.Config{ControlToken: "secret", GatewayPortStart: 20000, GatewayPortEnd: 20000, GatewayPortBlockSize: 1}
 	pool, err := NewPool(cfg, 1, func(ctx context.Context, index int, method, path string, body []byte) (int, []byte, error) {
