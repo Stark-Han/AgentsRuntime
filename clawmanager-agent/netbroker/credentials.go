@@ -23,6 +23,7 @@ import (
 )
 
 const operationTimeout = 5 * time.Second
+const initialRetryDelay = 500 * time.Millisecond
 const maxHeaders = 16 << 10
 
 var errCredentials = errors.New("netbroker: credentials unavailable")
@@ -190,6 +191,18 @@ func NewCredentials(ctx context.Context, base, token string, id Identity) (*Cred
 }
 func newCredentials(parent context.Context, base, token string, id Identity, timing credentialTiming) (*Credentials, error) {
 	lease, err := Acquire(parent, base, token, id)
+	// A just-published assignment may meet a short backend outage. Retry only a
+	// transient control-plane failure, before any workload or broker is started.
+	if errors.Is(err, errLeaseTemporary) && parent.Err() == nil {
+		timer := time.NewTimer(initialRetryDelay)
+		defer timer.Stop()
+		select {
+		case <-parent.Done():
+			return nil, err
+		case <-timer.C:
+			lease, err = Acquire(parent, base, token, id)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -238,8 +251,8 @@ func newCredentials(parent context.Context, base, token string, id Identity, tim
 						return
 					}
 					failures++
-					// Only renewal is retried. No business request is replayed and the
-					// signed lease's original expiry remains the hard deadline.
+					// No business request is replayed. The signed lease's original
+					// expiry remains the hard deadline for renewal retries.
 					delay := backoff/2 + time.Duration(rand.Int64N(int64(backoff-backoff/2)+1))
 					remaining := lease.ExpiresAt.Sub(timing.now())
 					if delay > remaining {
